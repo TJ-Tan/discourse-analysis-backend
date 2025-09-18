@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+
+# Application specific
+uploads/
+temp_processing/
+.env
+
+# OS files
+.DS_Store
+*.log
