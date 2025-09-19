@@ -84,6 +84,13 @@ class VideoAnalysisProcessor:
         """
         Extract audio and key video frames from uploaded video
         """
+
+        import shutil
+
+        # Check if ffmpeg is available
+        if not shutil.which('ffmpeg'):
+            raise Exception("FFmpeg is not installed on the server. Please contact support.")
+    
         # Extract audio using FFmpeg
         audio_path = self.temp_dir / f"{video_path.stem}_audio.wav"
         
