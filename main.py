@@ -26,7 +26,11 @@ app = FastAPI(title="Discourse Analysis API", version="2.0.0")
 # Enable CORS for frontend communication
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React frontend URL
+    allow_origins=[
+        "http://localhost:3000",  # Local development
+        "https://*.vercel.app",   # All Vercel domains
+        "https://discourse-analysis-frontend.vercel.app"  # Your specific Vercel URL
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
