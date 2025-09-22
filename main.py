@@ -28,9 +28,9 @@ app = FastAPI(title="Discourse Analysis API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",  # Local development
-        "https://discourse-analysis-frontend.vercel.app",  # Your actual Vercel URL
-        "discourse-analysis-frontend-z67rssi22-tj-tans-projects.vercel.app",   # All Vercel subdomains
+        "http://localhost:3000",
+        "https://discourse-analysis-frontend.vercel.app",
+        "https://discourse-analysis-frontend-z67rssi22-tj-tans-projects.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -63,20 +63,65 @@ async def health_check():
         }
     }
 
-@app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...), response: Response = None):
-    # Add CORS headers manually
-    response.headers["Access-Control-Allow-Origin"] = "https://discourse-analysis-frontend.vercel.app"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-
 @app.options("/upload-video")
 async def upload_video_options():
     return {"message": "OK"}
 
-
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
+    """
+    Upload a lecture video for AI-powered analysis
+    """
+    # Validate file type
+    if not file.content_type.startswith('video/'):
+        raise HTTPException(status_code=400, detail="File must be a video")
+    
+    # Check file extension
+    file_extension = Path(file.filename).suffix.lower()
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file format. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Generate unique ID for this analysis
+    analysis_id = str(uuid.uuid4())
+    
+    # Save the uploaded file
+    file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
+    
+    try:
+        # Save file to disk
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Initialize analysis status
+        analysis_results[analysis_id] = {
+            "status": "processing",
+            "progress": 5,
+            "message": "File uploaded successfully. Starting AI analysis...",
+            "filename": file.filename,
+            "file_size": file_path.stat().st_size
+        }
+        
+        # Start analysis in background
+        if AI_AVAILABLE:
+            asyncio.create_task(process_video_with_ai(analysis_id, file_path))
+        else:
+            asyncio.create_task(process_video_mock(analysis_id, file_path))
+        
+        return {
+            "analysis_id": analysis_id,
+            "message": "Video uploaded successfully. AI analysis started.",
+            "filename": file.filename,
+            "estimated_time": "3-5 minutes" if AI_AVAILABLE else "10 seconds (mock)"
+        }
+        
+    except Exception as e:
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(status_code=500, detail=f"Could not process file: {str(e)}")
+
     """
     Upload a lecture video for AI-powered analysis
     """
