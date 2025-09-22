@@ -93,61 +93,8 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Unsupported file format. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
         )
     
-    # Generate unique ID for this analysis
-    analysis_id = str(uuid.uuid4())
-    
-    # Save the uploaded file
-    file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
-    
-    try:
-        # Save file to disk
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Initialize analysis status
-        analysis_results[analysis_id] = {
-            "status": "processing",
-            "progress": 5,
-            "message": "File uploaded successfully. Starting AI analysis...",
-            "filename": file.filename,
-            "file_size": file_path.stat().st_size
-        }
-        
-        # Start analysis in background
-        if AI_AVAILABLE:
-            asyncio.create_task(process_video_with_ai(analysis_id, file_path))
-        else:
-            asyncio.create_task(process_video_mock(analysis_id, file_path))
-        
-        return {
-            "analysis_id": analysis_id,
-            "message": "Video uploaded successfully. AI analysis started.",
-            "filename": file.filename,
-            "estimated_time": "3-5 minutes" if AI_AVAILABLE else "10 seconds (mock)"
-        }
-        
-    except Exception as e:
-        if file_path.exists():
-            file_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Could not process file: {str(e)}")
-
-    """
-    Upload a lecture video for AI-powered analysis
-    """
-    # Validate file type
-    if not file.content_type.startswith('video/'):
-        raise HTTPException(status_code=400, detail="File must be a video")
-    
-    # Check file extension
-    file_extension = Path(file.filename).suffix.lower()
-    if file_extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file format. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
-        )
-    
     # Check file size (this is approximate, as we're streaming)
-    if hasattr(file, 'size') and file.size > MAX_FILE_SIZE:
+    if hasattr(file, 'size') and file.size and file.size > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413, 
             detail=f"File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB"
