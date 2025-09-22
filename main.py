@@ -1,4 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os
@@ -61,6 +62,13 @@ async def health_check():
             "ai_processor": "available" if AI_AVAILABLE else "missing"
         }
     }
+
+@app.post("/upload-video")
+async def upload_video(file: UploadFile = File(...), response: Response = None):
+    # Add CORS headers manually
+    response.headers["Access-Control-Allow-Origin"] = "https://discourse-analysis-frontend.vercel.app"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
 
 @app.options("/upload-video")
 async def upload_video_options():
