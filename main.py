@@ -29,7 +29,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",  # Local development
         "https://discourse-analysis-frontend.vercel.app",  # Your actual Vercel URL
-        "https://*.vercel.app",   # All Vercel subdomains
+        "discourse-analysis-frontend-z67rssi22-tj-tans-projects.vercel.app",   # All Vercel subdomains
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
