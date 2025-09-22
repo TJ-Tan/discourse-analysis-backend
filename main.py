@@ -1,6 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi import Response
-from fastapi import Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os
@@ -25,22 +23,28 @@ except ImportError:
 # Create FastAPI app
 app = FastAPI(title="Discourse Analysis API", version="2.0.0")
 
+# NUCLEAR CORS OPTION - Allow everything
 @app.middleware("http")
-async def add_cors_header(request: Request, call_next):
+async def cors_handler(request: Request, call_next):
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Credentials"] = "false"
+    response.headers["Access-Control-Allow-Methods"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
-# Enable CORS for frontend communication
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins temporarily
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Handle preflight requests
+@app.options("/{full_path:path}")
+async def options_handler(request: Request):
+    return JSONResponse(
+        content="OK",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 
 # Create upload directory
 UPLOAD_DIR = Path("uploads")
