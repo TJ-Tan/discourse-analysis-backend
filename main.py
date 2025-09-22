@@ -28,11 +28,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local development
-        "https://*.vercel.app",   # All Vercel domains
-        "https://discourse-analysis-frontend.vercel.app"  # Your specific Vercel URL
+        "https://discourse-analysis-frontend.vercel.app",  # Your actual Vercel URL
+        "https://*.vercel.app",   # All Vercel subdomains
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -61,6 +61,11 @@ async def health_check():
             "ai_processor": "available" if AI_AVAILABLE else "missing"
         }
     }
+
+@app.options("/upload-video")
+async def upload_video_options():
+    return {"message": "OK"}
+
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
