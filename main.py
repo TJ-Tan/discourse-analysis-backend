@@ -31,8 +31,8 @@ app.add_middleware(
         "https://discourse-analysis-frontend.vercel.app",  # Your actual Vercel URL
         "discourse-analysis-frontend-z67rssi22-tj-tans-projects.vercel.app",   # All Vercel subdomains
     ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
