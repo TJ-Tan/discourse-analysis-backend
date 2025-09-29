@@ -722,21 +722,30 @@ class VideoAnalysisProcessor:
         """Enhanced speech score calculation with weighted sub-components"""
         weights = ANALYSIS_CONFIG["weights"]["speech_components"]
         
+        # Safe float conversion helper
+        def safe_float(value, default=0.0):
+            if isinstance(value, (list, tuple)):
+                value = value[0] if value else default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
         # Calculate individual component scores using configurable thresholds
-        speaking_rate = speech_analysis.get('speaking_rate', 150)
-        rate_score = calculate_metric_score(speaking_rate, SPEECH_METRICS["speaking_rate"])
+        speaking_rate = safe_float(speech_analysis.get('speaking_rate', 150))
+        rate_score = float(calculate_metric_score(speaking_rate, SPEECH_METRICS["speaking_rate"]))
         
-        filler_ratio = speech_analysis.get('filler_ratio', 0.05)
-        fluency_score = calculate_metric_score(filler_ratio, SPEECH_METRICS["filler_ratio"], reverse_scale=True)
+        filler_ratio = safe_float(speech_analysis.get('filler_ratio', 0.05))
+        fluency_score = float(calculate_metric_score(filler_ratio, SPEECH_METRICS["filler_ratio"], reverse_scale=True))
         
-        confidence = speech_analysis.get('confidence', 0.8)
-        clarity_score = calculate_metric_score(confidence, SPEECH_METRICS["speaking_clarity"])
+        confidence = safe_float(speech_analysis.get('confidence', 0.8))
+        clarity_score = float(calculate_metric_score(confidence, SPEECH_METRICS["speaking_clarity"]))
         
-        voice_variety = speech_analysis.get('voice_variety_score', 0.5)
-        variety_score = calculate_metric_score(voice_variety, SPEECH_METRICS["voice_variety"])
+        voice_variety = safe_float(speech_analysis.get('voice_variety_score', 0.5))
+        variety_score = float(calculate_metric_score(voice_variety, SPEECH_METRICS["voice_variety"]))
         
-        pause_effectiveness = speech_analysis.get('pause_effectiveness_score', 0.5)
-        pause_score = calculate_metric_score(pause_effectiveness, SPEECH_METRICS["pause_effectiveness"])
+        pause_effectiveness = safe_float(speech_analysis.get('pause_effectiveness_score', 0.5))
+        pause_score = float(calculate_metric_score(pause_effectiveness, SPEECH_METRICS["pause_effectiveness"]))
         
         # Weighted combination
         total_score = (
@@ -747,7 +756,7 @@ class VideoAnalysisProcessor:
             pause_score * weights["pause_effectiveness"]
         )
         
-        return total_score
+        return float(total_score)
     
     def calculate_visual_score_enhanced(self, visual_analysis: Dict) -> float:
         """Enhanced visual score calculation with weighted sub-components"""
@@ -757,16 +766,25 @@ class VideoAnalysisProcessor:
         if not scores:
             return 7.0
         
-        # Calculate weighted visual score
+        # Ensure all scores are floats, not lists or strings
+        def safe_float(value, default=7.0):
+            if isinstance(value, (list, tuple)):
+                value = value[0] if value else default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
+        # Calculate weighted visual score with safe conversion
         total_score = (
-            scores.get('eye_contact', 7) * weights["eye_contact"] +
-            scores.get('gestures', 7) * weights["gestures"] +
-            scores.get('posture', 7) * weights["posture"] +
-            scores.get('engagement', 7) * weights["engagement"] +
-            scores.get('professionalism', 8) * weights["professionalism"]
+            safe_float(scores.get('eye_contact', 7)) * weights["eye_contact"] +
+            safe_float(scores.get('gestures', 7)) * weights["gestures"] +
+            safe_float(scores.get('posture', 7)) * weights["posture"] +
+            safe_float(scores.get('engagement', 7)) * weights["engagement"] +
+            safe_float(scores.get('professionalism', 8)) * weights["professionalism"]
         )
         
-        return total_score
+        return float(total_score)
     
     def calculate_pedagogy_score_enhanced(self, pedagogical_analysis: Dict) -> float:
         """Enhanced pedagogy score calculation with weighted sub-components"""
