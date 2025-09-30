@@ -80,7 +80,7 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 55, f"Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM")
             
             # Step 3: Enhanced visual analysis with more frames
-            logger.info("👁️ Step 3: Analyzing visual elements with GPT-5 Vision...")
+            logger.info("👁️ Step 3: Analyzing visual elements with GPT-4o Vision...")
             await progress_callback(analysis_id, 60, "Starting enhanced visual analysis...")
             visual_analysis = await self.analyze_visual_elements_enhanced(video_frames)
             logger.info(f"✅ Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed")
@@ -252,8 +252,8 @@ class VideoAnalysisProcessor:
         sentences = re.split(r'[.!?]+', transcript_text)
         highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]  # Top 10 substantial sentences
         
-        # Progress: 45-50% for GPT-5 content analysis
-        logger.info("🎓 Analyzing full transcript structure with GPT-5...")
+        # Progress: 45-50% for GPT-4o content analysis
+        logger.info("🎓 Analyzing full transcript structure with GPT-4o...")
         await self.progress_callback(self.analysis_id, 45, "Analyzing content structure...")
         content_analysis = await self.analyze_content_structure_enhanced(transcript_text)
         logger.info("✅ Enhanced content structure analysis complete")
@@ -359,7 +359,7 @@ class VideoAnalysisProcessor:
         logger.info(f"📊 Analyzing full transcript: {len(full_transcript)} characters")
         
         response = openai_client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
@@ -445,9 +445,9 @@ class VideoAnalysisProcessor:
             _, buffer = cv2.imencode('.jpg', frame)
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Enhanced frame analysis with GPT-5 Vision
+            # Enhanced frame analysis with GPT-4o Vision
             response = openai_client.chat.completions.create(
-                model="gpt-5-nano",
+                model="gpt-4o", # Vision requires gpt-4o, not mini
                 messages=[
                     {
                         "role": "user",
@@ -575,7 +575,7 @@ class VideoAnalysisProcessor:
         """
         Enhanced comprehensive pedagogical analysis with weighted sub-components
         """
-        # Prepare enhanced context for GPT-5
+        # Prepare enhanced context for GPT-4o
         context = f"""
         COMPREHENSIVE LECTURE ANALYSIS DATA:
         
@@ -601,7 +601,7 @@ class VideoAnalysisProcessor:
         """
         
         response = openai_client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
