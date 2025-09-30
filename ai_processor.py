@@ -70,28 +70,67 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 10, "Extracting audio and video components...")
             audio_path, video_frames = await self.extract_components(video_path)
             logger.info(f"✅ Extracted {len(video_frames)} video frames and audio track")
-            await progress_callback(analysis_id, 25, f"Extracted {len(video_frames)} video frames and audio track")
+            # Get video metadata
+            cap_temp = cv2.VideoCapture(str(video_path))
+            fps = cap_temp.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration_seconds = total_frames / fps if fps > 0 else 0
+            cap_temp.release()
+
+            await progress_callback(analysis_id, 25, f"Extracted {len(video_frames)} frames and audio", {
+                "step1": {
+                    "status": "completed",
+                    "duration": f"{duration_seconds:.1f}s",
+                    "frames_extracted": len(video_frames),
+                    "audio_format": "16kHz Mono WAV",
+                    "video_resolution": "640x480"
+                }
+            })
             
             # Step 2: Enhanced speech analysis with full transcript
             logger.info("🎤 Step 2: Analyzing speech with Whisper...")
             await progress_callback(analysis_id, 30, "Starting comprehensive speech analysis...")
             speech_analysis = await self.analyze_speech_enhanced(audio_path)
             logger.info(f"✅ Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM")
-            await progress_callback(analysis_id, 55, f"Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM")
+            await progress_callback(analysis_id, 55, f"Speech analysis complete: {speech_analysis['word_count']} words", {
+                "step2": {
+                    "status": "completed",
+                    "word_count": speech_analysis['word_count'],
+                    "transcript_length": len(speech_analysis['transcript']),
+                    "speaking_rate": f"{speech_analysis['speaking_rate']:.1f} WPM",
+                    "duration_minutes": f"{speech_analysis['duration_minutes']:.1f} min",
+                    "filler_words": len(speech_analysis.get('filler_details', []))
+                }
+            })
             
             # Step 3: Enhanced visual analysis with more frames
             logger.info("👁️ Step 3: Analyzing visual elements with GPT-4o Vision...")
             await progress_callback(analysis_id, 60, "Starting enhanced visual analysis...")
             visual_analysis = await self.analyze_visual_elements_enhanced(video_frames)
             logger.info(f"✅ Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed")
-            await progress_callback(analysis_id, 75, f"Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed")
+            await progress_callback(analysis_id, 75, f"Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed", {
+                "step3": {
+                    "status": "completed",
+                    "frames_analyzed": visual_analysis.get('frames_analyzed', 0),
+                    "eye_contact": f"{visual_analysis.get('scores', {}).get('eye_contact', 0):.1f}/10",
+                    "gestures": f"{visual_analysis.get('scores', {}).get('gestures', 0):.1f}/10",
+                    "posture": f"{visual_analysis.get('scores', {}).get('posture', 0):.1f}/10"
+                }
+            })
             
             # Step 4: Enhanced pedagogical assessment with full transcript
             logger.info("🎓 Step 4: Generating comprehensive pedagogical insights...")
             await progress_callback(analysis_id, 80, "Generating detailed pedagogical insights...")
             pedagogical_analysis = await self.analyze_pedagogy_enhanced(speech_analysis, visual_analysis)
             logger.info("✅ Enhanced pedagogical analysis complete")
-            await progress_callback(analysis_id, 90, "Enhanced pedagogical analysis complete")
+            await progress_callback(analysis_id, 90, "Pedagogical analysis complete", {
+                "step4": {
+                    "status": "completed",
+                    "content_organization": f"{pedagogical_analysis.get('content_organization', 0):.1f}/10",
+                    "engagement": f"{pedagogical_analysis.get('engagement_techniques', 0):.1f}/10",
+                    "teaching_effectiveness": f"{pedagogical_analysis.get('overall_effectiveness', 0):.1f}/10"
+                }
+            })
             
             # Step 5: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 5: Calculating weighted component scores...")
@@ -208,37 +247,6 @@ class VideoAnalysisProcessor:
         audio_data, sample_rate = librosa.load(str(audio_path), sr=16000)
         
         await self.progress_callback(self.analysis_id, 42, "Analyzing speech patterns...")
-
-        """
-        Enhanced speech analysis using full transcript and expanded metrics
-        """
-        logger.info("🎤 Starting enhanced Whisper transcription...")
-
-        # Start progress simulation in background
-        progress_task = asyncio.create_task(
-            self.simulate_progress_during_operation(20, 29, 10, "Transcribing with Whisper")
-        )
-        
-        # Transcribe audio using Whisper
-        with open(audio_path, "rb") as audio_file:
-            transcript_response = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="verbose_json",
-                timestamp_granularities=["word"]
-            )
-
-        # Cancel progress simulation and set to complete
-        progress_task.cancel()
-        await self.progress_callback(self.analysis_id, 30, "Whisper transcription complete")
-        
-        logger.info("✅ Whisper transcription complete")
-        transcript_text = transcript_response.text
-        logger.info(f"📝 Full transcript length: {len(transcript_text)} characters")
-        
-        # Enhanced speech metrics calculation
-        logger.info("🔢 Calculating enhanced speech metrics...")
-        audio_data, sample_rate = librosa.load(str(audio_path), sr=16000)
         
         # Basic metrics
         duration_minutes = len(audio_data) / sample_rate / 60
@@ -276,10 +284,10 @@ class VideoAnalysisProcessor:
         
         # Extract key phrases using improved analysis
         sentences = re.split(r'[.!?]+', transcript_text)
-        highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]  # Top 10 substantial sentences
+        highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]
         
         # Progress: 45-50% for GPT-4o content analysis
-        logger.info("🎓 Analyzing full transcript structure with GPT-4...")
+        logger.info("🎓 Analyzing full transcript structure with GPT-4o...")
         await self.progress_callback(self.analysis_id, 48, "Analyzing content structure with AI...")
         content_analysis = await self.analyze_content_structure_enhanced(transcript_text)
         logger.info("✅ Enhanced content structure analysis complete")
@@ -287,7 +295,7 @@ class VideoAnalysisProcessor:
         
         return {
             'transcript': transcript_text,
-            'confidence': 0.95,  # Whisper is generally very reliable
+            'confidence': 0.95,
             'speaking_rate': speaking_rate,
             'speaking_ratio': speaking_ratio,
             'filler_ratio': filler_ratio,
