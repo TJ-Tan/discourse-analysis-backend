@@ -33,12 +33,35 @@ class VideoAnalysisProcessor:
     def __init__(self):
         self.temp_dir = Path("temp_processing")
         self.temp_dir.mkdir(exist_ok=True)
+        self.analysis_id = None  # Add this to store current analysis_id
+        self.progress_callback = None  # Add this to store callback
+    
+    async def simulate_progress_during_operation(self, start_progress: int, end_progress: int, duration_seconds: float, message: str):
+        """Simulate progress updates during a long operation"""
+        if not self.progress_callback or not self.analysis_id:
+            return
+            
+        steps = max(int(duration_seconds * 2), 1)  # Update every 0.5 seconds
+        increment = (end_progress - start_progress) / steps
+        
+        for i in range(steps):
+            current_progress = int(start_progress + (increment * i))
+            await self.progress_callback(
+                self.analysis_id, 
+                current_progress, 
+                f"{message} ({current_progress}%)"
+            )
+            await asyncio.sleep(0.5)
         
     async def process_video(self, video_path: Path, analysis_id: str, progress_callback):
         """
         Enhanced processing pipeline for video analysis with improved sampling and metrics
         """
         try:
+            # Store for use in helper methods
+            self.analysis_id = analysis_id
+            self.progress_callback = progress_callback
+
             logger.info(f"🎬 Starting enhanced video analysis for {analysis_id}")
             logger.info(f"📁 File: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f}MB)")
             
@@ -57,7 +80,7 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 55, f"Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM")
             
             # Step 3: Enhanced visual analysis with more frames
-            logger.info("👁️ Step 3: Analyzing visual elements with GPT-4 Vision...")
+            logger.info("👁️ Step 3: Analyzing visual elements with GPT-5 Vision...")
             await progress_callback(analysis_id, 60, "Starting enhanced visual analysis...")
             visual_analysis = await self.analyze_visual_elements_enhanced(video_frames)
             logger.info(f"✅ Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed")
@@ -164,6 +187,11 @@ class VideoAnalysisProcessor:
         Enhanced speech analysis using full transcript and expanded metrics
         """
         logger.info("🎤 Starting enhanced Whisper transcription...")
+
+        # Start progress simulation in background
+        progress_task = asyncio.create_task(
+            self.simulate_progress_during_operation(20, 29, 10, "Transcribing with Whisper")
+        )
         
         # Transcribe audio using Whisper
         with open(audio_path, "rb") as audio_file:
@@ -173,6 +201,10 @@ class VideoAnalysisProcessor:
                 response_format="verbose_json",
                 timestamp_granularities=["word"]
             )
+
+        # Cancel progress simulation and set to complete
+        progress_task.cancel()
+        await self.progress_callback(self.analysis_id, 30, "Whisper transcription complete")
         
         logger.info("✅ Whisper transcription complete")
         transcript_text = transcript_response.text
@@ -220,9 +252,10 @@ class VideoAnalysisProcessor:
         sentences = re.split(r'[.!?]+', transcript_text)
         highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]  # Top 10 substantial sentences
         
-        # Enhanced content structure analysis using FULL transcript
-        logger.info("🎓 Analyzing full transcript structure with GPT-4...")
-        content_analysis = await self.analyze_content_structure_enhanced(transcript_text)  # Full transcript
+        # Progress: 45-50% for GPT-5 content analysis
+        logger.info("🎓 Analyzing full transcript structure with GPT-5...")
+        await self.progress_callback(self.analysis_id, 45, "Analyzing content structure...")
+        content_analysis = await self.analyze_content_structure_enhanced(transcript_text)
         logger.info("✅ Enhanced content structure analysis complete")
         
         return {
@@ -326,7 +359,7 @@ class VideoAnalysisProcessor:
         logger.info(f"📊 Analyzing full transcript: {len(full_transcript)} characters")
         
         response = openai_client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
@@ -399,14 +432,22 @@ class VideoAnalysisProcessor:
         for i, frame_data in enumerate(selected_frames):
             frame = frame_data['frame']
             timestamp = frame_data['timestamp']
+
+            # Calculate progress for this frame within 50-75% range
+            frame_progress = 50 + int((i / len(selected_frames)) * 25)
+            await self.progress_callback(
+                self.analysis_id,
+                frame_progress,
+                f"Analyzing frame {i+1}/{len(selected_frames)} (t={timestamp:.1f}s) - {frame_progress}%"
+            )
             
             # Convert frame to base64 for OpenAI Vision API
             _, buffer = cv2.imencode('.jpg', frame)
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Enhanced frame analysis with GPT-4 Vision
+            # Enhanced frame analysis with GPT-5 Vision
             response = openai_client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5-nano",
                 messages=[
                     {
                         "role": "user",
@@ -534,7 +575,7 @@ class VideoAnalysisProcessor:
         """
         Enhanced comprehensive pedagogical analysis with weighted sub-components
         """
-        # Prepare enhanced context for GPT-4
+        # Prepare enhanced context for GPT-5
         context = f"""
         COMPREHENSIVE LECTURE ANALYSIS DATA:
         
@@ -560,7 +601,7 @@ class VideoAnalysisProcessor:
         """
         
         response = openai_client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
@@ -876,6 +917,7 @@ class VideoAnalysisProcessor:
             feedback.append(f"Comprehensive analysis of {frames_analyzed} frames shows consistent delivery")
         
         return feedback
+    
     
     def assess_time_management(self, speech_analysis: Dict) -> float:
         """Enhanced time management assessment"""
