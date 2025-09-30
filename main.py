@@ -1,29 +1,31 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Dict, List, Any, Optional
 import os
 import shutil
 from pathlib import Path
 import uuid
-from typing import Dict, Any
 import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Import AI processor
+# Import enhanced AI processor and configuration
 try:
     from ai_processor import video_processor
+    from metrics_config import get_configurable_parameters, update_configuration, ANALYSIS_CONFIG
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
-    print("Warning: AI processor not available. Running in mock mode.")
+    print("Warning: Enhanced AI processor not available. Running in mock mode.")
 
 # Create FastAPI app
-app = FastAPI(title="Discourse Analysis API", version="2.0.0")
+app = FastAPI(title="Enhanced Discourse Analysis API", version="3.0.0")
 
-# NUCLEAR CORS OPTION - Allow everything
+# CORS Configuration
 @app.middleware("http")
 async def cors_handler(request: Request, call_next):
     response = await call_next(request)
@@ -33,7 +35,6 @@ async def cors_handler(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
-# Handle preflight requests
 @app.options("/{full_path:path}")
 async def options_handler(request: Request):
     return JSONResponse(
@@ -45,6 +46,15 @@ async def options_handler(request: Request):
         }
     )
 
+# Pydantic models for configuration
+class ConfigurationUpdate(BaseModel):
+    category_weights: Optional[Dict[str, float]] = None
+    speech_components: Optional[Dict[str, float]] = None
+    visual_components: Optional[Dict[str, float]] = None
+    pedagogy_components: Optional[Dict[str, float]] = None
+    thresholds: Optional[Dict[str, Any]] = None
+    sampling_config: Optional[Dict[str, Any]] = None
+    filler_words: Optional[List[str]] = None
 
 # Create upload directory
 UPLOAD_DIR = Path("uploads")
@@ -59,18 +69,96 @@ ALLOWED_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
 
 @app.get("/")
 async def root():
-    return {"message": "AI-Powered Discourse Analysis API is running!", "version": "2.0.0"}
+    return {
+        "message": "Enhanced AI-Powered Discourse Analysis API is running!", 
+        "version": "3.0.0",
+        "features": [
+            "Enhanced frame sampling (up to 40 frames)",
+            "Full transcript analysis",
+            "Weighted sub-component scoring",
+            "Configurable thresholds",
+            "Expanded filler word detection",
+            "Advanced voice variety analysis",
+            "Strategic pause effectiveness scoring"
+        ]
+    }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Enhanced health check endpoint"""
     return {
         "status": "healthy",
+        "version": "3.0.0",
         "ai_services": {
             "openai": "configured" if os.getenv('OPENAI_API_KEY') else "missing",
-            "ai_processor": "available" if AI_AVAILABLE else "missing"
+            "ai_processor": "enhanced" if AI_AVAILABLE else "missing"
+        },
+        "configuration": {
+            "max_frames": ANALYSIS_CONFIG["sampling"]["max_frames_analyzed"] if AI_AVAILABLE else "N/A",
+            "frame_interval": ANALYSIS_CONFIG["sampling"]["frame_interval_seconds"] if AI_AVAILABLE else "N/A",
+            "full_transcript": ANALYSIS_CONFIG["sampling"]["transcript_char_limit"] is None if AI_AVAILABLE else "N/A"
         }
     }
+
+@app.get("/configuration")
+async def get_configuration():
+    """Get current configuration parameters"""
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI processor not available")
+    
+    try:
+        config = get_configurable_parameters()
+        return {
+            "status": "success",
+            "configuration": config,
+            "message": "Current configuration retrieved successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get configuration: {str(e)}")
+
+@app.post("/configuration")
+async def update_configuration_endpoint(config_update: ConfigurationUpdate):
+    """Update configuration parameters"""
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI processor not available")
+    
+    try:
+        # Convert Pydantic model to dict and filter None values
+        update_data = {k: v for k, v in config_update.dict().items() if v is not None}
+        
+        # Update configuration
+        success = update_configuration(update_data)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "Configuration updated successfully",
+                "updated_parameters": list(update_data.keys())
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Failed to update configuration")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Configuration update failed: {str(e)}")
+
+@app.post("/configuration/reset")
+async def reset_configuration():
+    """Reset configuration to default values"""
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI processor not available")
+    
+    try:
+        # Reset to defaults by importing fresh config
+        from importlib import reload
+        import metrics_config
+        reload(metrics_config)
+        
+        return {
+            "status": "success",
+            "message": "Configuration reset to default values"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Configuration reset failed: {str(e)}")
 
 @app.options("/upload-video")
 async def upload_video_options():
@@ -79,7 +167,7 @@ async def upload_video_options():
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
     """
-    Upload a lecture video for AI-powered analysis
+    Upload a lecture video for enhanced AI-powered analysis
     """
     # Validate file type
     if not file.content_type.startswith('video/'):
@@ -93,7 +181,7 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Unsupported file format. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
         )
     
-    # Check file size (this is approximate, as we're streaming)
+    # Check file size
     if hasattr(file, 'size') and file.size and file.size > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413, 
@@ -115,26 +203,42 @@ async def upload_video(file: UploadFile = File(...)):
         if not file_path.exists():
             raise HTTPException(status_code=500, detail="Failed to save uploaded file")
         
-        # Initialize analysis status
+        # Get current configuration for analysis
+        current_config = get_configurable_parameters() if AI_AVAILABLE else {}
+        
+        # Initialize analysis status with enhanced info
         analysis_results[analysis_id] = {
             "status": "processing",
             "progress": 5,
-            "message": "File uploaded successfully. Starting AI analysis...",
+            "message": "File uploaded successfully. Starting enhanced AI analysis...",
             "filename": file.filename,
-            "file_size": file_path.stat().st_size
+            "file_size": file_path.stat().st_size,
+            "analysis_config": {
+                "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
+                "frame_interval": current_config.get("sampling_config", {}).get("frame_interval_seconds", 6),
+                "full_transcript": current_config.get("sampling_config", {}).get("use_full_transcript", True),
+                "enhanced_mode": True
+            }
         }
         
-        # Start analysis in background
+        # Start enhanced analysis in background
         if AI_AVAILABLE:
-            asyncio.create_task(process_video_with_ai(analysis_id, file_path))
+            asyncio.create_task(process_video_with_enhanced_ai(analysis_id, file_path))
         else:
             asyncio.create_task(process_video_mock(analysis_id, file_path))
         
         return {
             "analysis_id": analysis_id,
-            "message": "Video uploaded successfully. AI analysis started.",
+            "message": "Video uploaded successfully. Enhanced AI analysis started.",
             "filename": file.filename,
-            "estimated_time": "3-5 minutes" if AI_AVAILABLE else "10 seconds (mock)"
+            "estimated_time": "4-7 minutes" if AI_AVAILABLE else "15 seconds (mock)",
+            "enhancement_features": [
+                f"Analyzing up to {current_config.get('sampling_config', {}).get('max_frames_analyzed', 40)} video frames",
+                "Full transcript processing",
+                "Advanced voice variety analysis",
+                "Strategic pause effectiveness scoring",
+                "Weighted sub-component calculation"
+            ]
         }
         
     except Exception as e:
@@ -146,7 +250,7 @@ async def upload_video(file: UploadFile = File(...)):
 @app.get("/analysis-status/{analysis_id}")
 async def get_analysis_status(analysis_id: str):
     """
-    Check the status of an AI analysis
+    Check the status of an enhanced AI analysis
     """
     if analysis_id not in analysis_results:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -176,22 +280,39 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
     Helper function to update analysis progress with optional details
     """
     if analysis_id in analysis_results:
-        # Preserve existing data and only update progress fields
         analysis_results[analysis_id]["progress"] = progress
         analysis_results[analysis_id]["message"] = message
+        
+        # Add step-specific details
         if details:
-            analysis_results[analysis_id]["details"] = details
+            if "step_details" not in analysis_results[analysis_id]:
+                analysis_results[analysis_id]["step_details"] = {}
+            analysis_results[analysis_id]["step_details"].update(details)
         
         print(f"DEBUG: Updated progress for {analysis_id}: {progress}% - {message}")
 
-async def process_video_with_ai(analysis_id: str, file_path: Path):
+async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
-    Process video analysis using real AI services
+    Process video analysis using real AI services with detailed step tracking
     """
     try:
-        # Define progress callback that properly updates state
-        async def progress_callback(aid, progress, message):
-            await update_progress(aid, progress, message)
+        # Initialize with step details structure
+        if analysis_id in analysis_results:
+            analysis_results[analysis_id]["details"] = {}
+        
+        # Define progress callback that accepts optional step_data
+        async def progress_callback(aid, progress, message, step_data=None):
+            if aid in analysis_results:
+                analysis_results[aid]["progress"] = progress
+                analysis_results[aid]["message"] = message
+                
+                # Update step-specific details
+                if step_data:
+                    if "details" not in analysis_results[aid]:
+                        analysis_results[aid]["details"] = {}
+                    analysis_results[aid]["details"].update(step_data)
+                
+                print(f"DEBUG: Updated progress for {aid}: {progress}% - {message}")
         
         # Run the AI analysis
         results = await video_processor.process_video(
@@ -200,7 +321,7 @@ async def process_video_with_ai(analysis_id: str, file_path: Path):
             progress_callback=progress_callback
         )
         
-        # Update with final results - preserve status and add results
+        # Update with final results
         if analysis_id in analysis_results:
             analysis_results[analysis_id].update({
                 "status": "completed",
@@ -210,7 +331,7 @@ async def process_video_with_ai(analysis_id: str, file_path: Path):
                 "processing_time": "Real AI analysis complete"
             })
         
-        # Clean up uploaded file after successful processing
+        # Clean up uploaded file
         try:
             if file_path.exists():
                 file_path.unlink()
@@ -219,6 +340,9 @@ async def process_video_with_ai(analysis_id: str, file_path: Path):
             
     except Exception as e:
         print(f"Analysis failed for {analysis_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         if analysis_id in analysis_results:
             analysis_results[analysis_id].update({
                 "status": "error",
@@ -234,41 +358,61 @@ async def process_video_with_ai(analysis_id: str, file_path: Path):
         except Exception:
             pass
 
-async def process_video_mock(analysis_id: str, file_path: Path):
+async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
     """
-    Fallback mock processing if AI is not available
+    Enhanced mock processing with realistic progress updates
     """
     try:
         # Initialize progress tracking
         analysis_results[analysis_id] = {
             "status": "processing",
             "progress": 10,
-            "message": "Extracting audio and video frames..."
+            "message": "Extracting enhanced audio and video components..."
         }
         
-        # Simulate processing steps
-        await asyncio.sleep(2)
-        analysis_results[analysis_id]["progress"] = 30
-        analysis_results[analysis_id]["message"] = "Analyzing speech patterns..."
-        
+        # Simulate enhanced processing steps
         await asyncio.sleep(3)
-        analysis_results[analysis_id]["progress"] = 60
-        analysis_results[analysis_id]["message"] = "Analyzing gestures and body language..."
+        analysis_results[analysis_id]["progress"] = 25
+        analysis_results[analysis_id]["message"] = "Analyzing 40 video frames with GPT-4 Vision..."
+        
+        await asyncio.sleep(4)
+        analysis_results[analysis_id]["progress"] = 45
+        analysis_results[analysis_id]["message"] = "Processing full transcript with advanced speech metrics..."
+        
+        await asyncio.sleep(4)
+        analysis_results[analysis_id]["progress"] = 65
+        analysis_results[analysis_id]["message"] = "Calculating voice variety and pause effectiveness..."
         
         await asyncio.sleep(3)
         analysis_results[analysis_id]["progress"] = 80
-        analysis_results[analysis_id]["message"] = "Generating final report..."
+        analysis_results[analysis_id]["message"] = "Generating weighted pedagogical assessment..."
         
         await asyncio.sleep(2)
+        analysis_results[analysis_id]["progress"] = 95
+        analysis_results[analysis_id]["message"] = "Finalizing enhanced analysis report..."
         
-        # Create mock analysis results
-        final_results = create_mock_analysis_results()
+        await asyncio.sleep(1)
+        
+        # Create enhanced mock analysis results
+        final_results = create_enhanced_mock_results()
         
         analysis_results[analysis_id] = {
             "status": "completed",
             "progress": 100,
-            "message": "Analysis completed successfully! (Mock mode)",
-            "results": final_results
+            "message": "Enhanced analysis completed successfully! (Mock mode)",
+            "results": final_results,
+            "analysis_summary": {
+                "frames_analyzed": 40,
+                "transcript_length": 15000,
+                "filler_words_detected": 8,
+                "enhancement_features_used": [
+                    "Enhanced frame sampling (40 frames)",
+                    "Full transcript analysis",
+                    "Advanced voice variety analysis",
+                    "Strategic pause effectiveness",
+                    "Weighted sub-component scoring"
+                ]
+            }
         }
         
         # Clean up uploaded file
@@ -279,81 +423,112 @@ async def process_video_mock(analysis_id: str, file_path: Path):
         analysis_results[analysis_id] = {
             "status": "error",
             "progress": 0,
-            "message": f"Analysis failed: {str(e)}"
+            "message": f"Enhanced analysis failed: {str(e)}"
         }
 
-def create_mock_analysis_results() -> Dict[str, Any]:
+def create_enhanced_mock_results() -> Dict[str, Any]:
     """
-    Create mock analysis results (fallback when AI is not available)
+    Create enhanced mock analysis results with all new features
     """
     return {
-        "overall_score": 7.8,
+        "overall_score": 8.1,
         "speech_analysis": {
-            "score": 8.2,
-            "clarity": 8.5,
-            "pace": 7.8,
-            "filler_words": 8.0,
-            "enthusiasm": 8.5,
+            "score": 8.4,
+            "speaking_rate": 165.3,
+            "clarity": 8.7,
+            "pace": 8.2,
+            "confidence": 9.1,
+            "voice_variety": 7.8,
+            "pause_effectiveness": 8.0,
             "feedback": [
-                "Excellent clarity in speech delivery",
-                "Good variation in pace to maintain engagement",
-                "Consider reducing use of filler words slightly",
-                "Great enthusiasm and energy throughout"
+                "Excellent speaking rate within optimal range (165 WPM)",
+                "Strong voice modulation enhances engagement",
+                "Effective use of strategic pauses for emphasis",
+                "Minimal filler words detected (2.1% ratio)"
             ]
         },
         "body_language": {
-            "score": 7.5,
-            "eye_contact": 7.8,
-            "gestures": 7.2,
+            "score": 7.8,
+            "eye_contact": 8.2,
+            "gestures": 7.5,
             "posture": 8.0,
-            "movement": 7.0,
+            "engagement": 7.8,
+            "professionalism": 8.5,
+            "frames_analyzed": 40,
             "feedback": [
-                "Good eye contact with camera/audience",
-                "Natural hand gestures support the content",
-                "Confident posture throughout presentation",
-                "Consider moving around more to engage different areas"
+                "Consistent eye contact throughout 40 analyzed frames",
+                "Natural hand gestures support content delivery",
+                "Professional appearance and confident posture",
+                "Visual engagement shows gradual improvement over time"
             ]
         },
         "teaching_effectiveness": {
-            "score": 7.6,
-            "content_flow": 8.0,
-            "explanations": 7.5,
-            "examples": 7.2,
-            "engagement": 7.8,
+            "score": 8.0,
+            "content_organization": 8.3,
+            "engagement_techniques": 7.6,
+            "communication_clarity": 8.2,
+            "use_of_examples": 7.8,
+            "knowledge_checking": 7.4,
             "feedback": [
-                "Logical flow of information",
+                "Excellent content structure with clear transitions",
+                "Good use of relevant examples throughout",
                 "Clear explanations of complex concepts",
-                "Good use of examples to illustrate points",
-                "Strong techniques to maintain student engagement"
+                "Could incorporate more comprehension checks"
             ]
         },
         "presentation_skills": {
-            "score": 8.0,
+            "score": 8.2,
             "professionalism": 8.5,
-            "energy": 8.2,
-            "time_management": 7.5,
-            "conclusion": 7.8,
+            "energy": 8.0,
+            "voice_modulation": 7.8,
+            "time_management": 8.1,
             "feedback": [
-                "Very professional presentation style",
-                "High energy level maintains interest",
-                "Generally good time management",
-                "Strong conclusion that summarizes key points"
+                "High professional standards maintained",
+                "Excellent energy and enthusiasm",
+                "Good voice modulation for emphasis",
+                "Effective time management throughout session"
             ]
         },
         "improvement_suggestions": [
-            "Practice reducing filler words during pauses",
-            "Incorporate more movement around the teaching space",
-            "Add more concrete examples to complex explanations",
-            "Consider interactive elements to boost engagement",
-            "Work on pacing to ensure all content fits time slot"
+            "Incorporate more interactive questioning techniques",
+            "Add periodic comprehension checks every 10-15 minutes",
+            "Consider more varied hand gestures for emphasis",
+            "Experiment with strategic movement around teaching space",
+            "Develop more concrete real-world examples"
         ],
         "strengths": [
-            "Excellent speaking clarity and voice projection",
-            "Professional demeanor and confident presence",
-            "Good use of gestures to emphasize points",
-            "Strong content organization and flow",
-            "High energy and enthusiasm for the subject"
-        ]
+            "Exceptional speaking clarity and articulation",
+            "Professional and confident presentation style",
+            "Well-organized content with logical progression",
+            "Effective use of voice variety and pacing",
+            "Strong visual presence with good eye contact",
+            "Comprehensive coverage of topic material"
+        ],
+        "detailed_insights": {
+            "transcript_summary": "This enhanced analysis processed the complete lecture transcript, analyzing voice patterns, pause effectiveness, and comprehensive content structure...",
+            "key_highlights": [
+                "Opening with clear learning objectives",
+                "Effective transition between main topics",
+                "Good use of analogy to explain complex concepts",
+                "Strong conclusion with key takeaways"
+            ],
+            "filler_word_analysis": [
+                {"word": "um", "count": 5},
+                {"word": "like", "count": 3},
+                {"word": "you know", "count": 2}
+            ]
+        },
+        "configuration_used": {
+            "frames_analyzed": 40,
+            "transcript_length": 15247,
+            "filler_words_detected": 8,
+            "category_weights": {
+                "speech_analysis": 30,
+                "body_language": 25,
+                "teaching_effectiveness": 35,
+                "presentation_skills": 10
+            }
+        }
     }
 
 if __name__ == "__main__":
