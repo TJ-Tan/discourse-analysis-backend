@@ -183,6 +183,32 @@ class VideoAnalysisProcessor:
         return audio_path, video_frames
     
     async def analyze_speech_enhanced(self, audio_path: Path) -> Dict[str, Any]:
+        """Enhanced speech analysis using full transcript and expanded metrics"""
+        logger.info("🎤 Starting enhanced Whisper transcription...")
+        
+        await self.progress_callback(self.analysis_id, 30, "Starting Whisper transcription...")
+        
+        # Transcribe audio using Whisper
+        with open(audio_path, "rb") as audio_file:
+            transcript_response = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["word"]
+            )
+        
+        await self.progress_callback(self.analysis_id, 40, "Transcription complete - calculating metrics...")
+        
+        logger.info("✅ Whisper transcription complete")
+        transcript_text = transcript_response.text
+        logger.info(f"📝 Full transcript length: {len(transcript_text)} characters")
+        
+        # Enhanced speech metrics calculation
+        logger.info("🔢 Calculating enhanced speech metrics...")
+        audio_data, sample_rate = librosa.load(str(audio_path), sr=16000)
+        
+        await self.progress_callback(self.analysis_id, 42, "Analyzing speech patterns...")
+
         """
         Enhanced speech analysis using full transcript and expanded metrics
         """
@@ -253,10 +279,11 @@ class VideoAnalysisProcessor:
         highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]  # Top 10 substantial sentences
         
         # Progress: 45-50% for GPT-4o content analysis
-        logger.info("🎓 Analyzing full transcript structure with GPT-4o...")
-        await self.progress_callback(self.analysis_id, 45, "Analyzing content structure...")
+        logger.info("🎓 Analyzing full transcript structure with GPT-4...")
+        await self.progress_callback(self.analysis_id, 48, "Analyzing content structure with AI...")
         content_analysis = await self.analyze_content_structure_enhanced(transcript_text)
         logger.info("✅ Enhanced content structure analysis complete")
+        await self.progress_callback(self.analysis_id, 50, "Speech analysis complete!")
         
         return {
             'transcript': transcript_text,
