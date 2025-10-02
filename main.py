@@ -290,6 +290,7 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
             analysis_results[analysis_id]["step_details"].update(details)
         
         print(f"DEBUG: Updated progress for {analysis_id}: {progress}% - {message}")
+        print(f"DEBUG: Current state: {analysis_results[analysis_id]}")
 
 async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
