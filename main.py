@@ -277,11 +277,21 @@ async def delete_analysis(analysis_id: str):
 
 async def update_progress(analysis_id: str, progress: int, message: str, details: dict = None):
     """
-    Helper function to update analysis progress with optional details
+    Helper function to update analysis progress with optional details and message history
     """
     if analysis_id in analysis_results:
         analysis_results[analysis_id]["progress"] = progress
         analysis_results[analysis_id]["message"] = message
+        
+        # Add message to log history
+        if "log_messages" not in analysis_results[analysis_id]:
+            analysis_results[analysis_id]["log_messages"] = []
+        
+        analysis_results[analysis_id]["log_messages"].append({
+            "timestamp": datetime.now().isoformat(),
+            "message": message,
+            "progress": progress
+        })
         
         # Add step-specific details
         if details:
@@ -290,22 +300,32 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
             analysis_results[analysis_id]["step_details"].update(details)
         
         print(f"DEBUG: Updated progress for {analysis_id}: {progress}% - {message}")
-        print(f"DEBUG: Current state: {analysis_results[analysis_id]}")
 
 async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
     Process video analysis using real AI services with detailed step tracking
     """
     try:
-        # Initialize with step details structure
+        # Initialize with log messages array
         if analysis_id in analysis_results:
-            analysis_results[analysis_id]["details"] = {}
+            analysis_results[analysis_id]["log_messages"] = []
         
-        # Define progress callback that accepts optional step_data
+        # Define progress callback that stores messages in log
         async def progress_callback(aid, progress, message, step_data=None):
             if aid in analysis_results:
                 analysis_results[aid]["progress"] = progress
                 analysis_results[aid]["message"] = message
+                
+                # Add to log history
+                if "log_messages" not in analysis_results[aid]:
+                    analysis_results[aid]["log_messages"] = []
+                
+                from datetime import datetime
+                analysis_results[aid]["log_messages"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "message": message,
+                    "progress": progress
+                })
                 
                 # Update step-specific details
                 if step_data:
