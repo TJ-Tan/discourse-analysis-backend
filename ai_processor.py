@@ -63,13 +63,20 @@ class VideoAnalysisProcessor:
             self.progress_callback = progress_callback
 
             logger.info(f"🎬 Starting enhanced video analysis for {analysis_id}")
+            await progress_callback(analysis_id, 5, f"🎬 Starting enhanced video analysis for {analysis_id}")
+            
             logger.info(f"📁 File: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f}MB)")
+            await progress_callback(analysis_id, 6, f"📁 File: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f}MB)")
             
             # Step 1: Extract audio and video components with enhanced sampling
             logger.info("🔧 Step 1: Extracting audio and video components...")
-            await progress_callback(analysis_id, 10, "Extracting audio and video components...")
+            await progress_callback(analysis_id, 10, "🔧 Step 1: Extracting audio and video components...")
+            
             audio_path, video_frames = await self.extract_components(video_path)
+            
             logger.info(f"✅ Extracted {len(video_frames)} video frames and audio track")
+            await progress_callback(analysis_id, 20, f"✅ Extracted {len(video_frames)} video frames and audio track")
+            
             # Get video metadata
             cap_temp = cv2.VideoCapture(str(video_path))
             fps = cap_temp.get(cv2.CAP_PROP_FPS)
@@ -77,7 +84,7 @@ class VideoAnalysisProcessor:
             duration_seconds = total_frames / fps if fps > 0 else 0
             cap_temp.release()
 
-            await progress_callback(analysis_id, 25, f"Extracted {len(video_frames)} frames and audio", {
+            await progress_callback(analysis_id, 25, f"📹 Video duration: {duration_seconds:.1f}s, extracting {len(video_frames)} frames", {
                 "step1": {
                     "status": "completed",
                     "duration": f"{duration_seconds:.1f}s",
@@ -89,10 +96,12 @@ class VideoAnalysisProcessor:
             
             # Step 2: Enhanced speech analysis with full transcript
             logger.info("🎤 Step 2: Analyzing speech with Whisper...")
-            await progress_callback(analysis_id, 30, "Starting comprehensive speech analysis...")
+            await progress_callback(analysis_id, 30, "🎤 Step 2: Analyzing speech with Whisper...")
+            
             speech_analysis = await self.analyze_speech_enhanced(audio_path)
+            
             logger.info(f"✅ Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM")
-            await progress_callback(analysis_id, 55, f"Speech analysis complete: {speech_analysis['word_count']} words", {
+            await progress_callback(analysis_id, 55, f"✅ Speech analysis complete: {speech_analysis['word_count']} words, {speech_analysis['speaking_rate']:.1f} WPM", {
                 "step2": {
                     "status": "completed",
                     "word_count": speech_analysis['word_count'],
@@ -105,10 +114,12 @@ class VideoAnalysisProcessor:
             
             # Step 3: Enhanced visual analysis with more frames
             logger.info("👁️ Step 3: Analyzing visual elements with GPT-4o Vision...")
-            await progress_callback(analysis_id, 60, "Starting enhanced visual analysis...")
+            await progress_callback(analysis_id, 60, "👁️ Step 3: Analyzing visual elements with GPT-4o Vision...")
+            
             visual_analysis = await self.analyze_visual_elements_enhanced(video_frames)
+            
             logger.info(f"✅ Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed")
-            await progress_callback(analysis_id, 75, f"Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed", {
+            await progress_callback(analysis_id, 75, f"✅ Visual analysis complete: {visual_analysis.get('frames_analyzed', 0)} frames processed", {
                 "step3": {
                     "status": "completed",
                     "frames_analyzed": visual_analysis.get('frames_analyzed', 0),
@@ -120,10 +131,12 @@ class VideoAnalysisProcessor:
             
             # Step 4: Enhanced pedagogical assessment with full transcript
             logger.info("🎓 Step 4: Generating comprehensive pedagogical insights...")
-            await progress_callback(analysis_id, 80, "Generating detailed pedagogical insights...")
+            await progress_callback(analysis_id, 80, "🎓 Step 4: Generating comprehensive pedagogical insights...")
+            
             pedagogical_analysis = await self.analyze_pedagogy_enhanced(speech_analysis, visual_analysis)
+            
             logger.info("✅ Enhanced pedagogical analysis complete")
-            await progress_callback(analysis_id, 90, "Pedagogical analysis complete", {
+            await progress_callback(analysis_id, 90, "✅ Enhanced pedagogical analysis complete", {
                 "step4": {
                     "status": "completed",
                     "content_organization": f"{pedagogical_analysis.get('content_organization', 0):.1f}/10",
@@ -134,9 +147,12 @@ class VideoAnalysisProcessor:
             
             # Step 5: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 5: Calculating weighted component scores...")
-            await progress_callback(analysis_id, 95, "Calculating final weighted scores...")
+            await progress_callback(analysis_id, 95, "📊 Step 5: Calculating weighted component scores...")
+            
             final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis)
+            
             logger.info(f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
+            await progress_callback(analysis_id, 100, f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
             
             # Cleanup temporary files
             await self.cleanup_temp_files(audio_path, video_frames)
@@ -146,6 +162,7 @@ class VideoAnalysisProcessor:
             
         except Exception as e:
             logger.error(f"❌ Enhanced video analysis failed for {analysis_id}: {str(e)}")
+            await progress_callback(analysis_id, 0, f"❌ Analysis failed: {str(e)}")
             raise Exception(f"Enhanced video analysis failed: {str(e)}")
     
     async def extract_components(self, video_path: Path):
@@ -224,8 +241,7 @@ class VideoAnalysisProcessor:
     async def analyze_speech_enhanced(self, audio_path: Path) -> Dict[str, Any]:
         """Enhanced speech analysis using full transcript and expanded metrics"""
         logger.info("🎤 Starting enhanced Whisper transcription...")
-        
-        await self.progress_callback(self.analysis_id, 30, "Starting Whisper transcription...")
+        await self.progress_callback(self.analysis_id, 30, "🎤 Starting enhanced Whisper transcription...")
         
         # Transcribe audio using Whisper
         with open(audio_path, "rb") as audio_file:
@@ -236,17 +252,18 @@ class VideoAnalysisProcessor:
                 timestamp_granularities=["word"]
             )
         
-        await self.progress_callback(self.analysis_id, 40, "Transcription complete - calculating metrics...")
+        await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
         
         logger.info("✅ Whisper transcription complete")
         transcript_text = transcript_response.text
         logger.info(f"📝 Full transcript length: {len(transcript_text)} characters")
+        await self.progress_callback(self.analysis_id, 42, f"📝 Full transcript length: {len(transcript_text)} characters")
         
         # Enhanced speech metrics calculation
         logger.info("🔢 Calculating enhanced speech metrics...")
-        audio_data, sample_rate = librosa.load(str(audio_path), sr=16000)
+        await self.progress_callback(self.analysis_id, 43, "🔢 Calculating enhanced speech metrics...")
         
-        await self.progress_callback(self.analysis_id, 42, "Analyzing speech patterns...")
+        audio_data, sample_rate = librosa.load(str(audio_path), sr=16000)
         
         # Basic metrics
         duration_minutes = len(audio_data) / sample_rate / 60
@@ -255,6 +272,7 @@ class VideoAnalysisProcessor:
         speaking_rate = word_count / duration_minutes if duration_minutes > 0 else 0
         
         logger.info(f"📊 Speaking rate: {speaking_rate:.1f} WPM")
+        await self.progress_callback(self.analysis_id, 45, f"📊 Speaking rate: {speaking_rate:.1f} WPM")
         
         # Enhanced voice activity detection
         voice_activity = librosa.effects.split(audio_data, top_db=20)
@@ -274,7 +292,8 @@ class VideoAnalysisProcessor:
         
         filler_ratio = filler_count / word_count if word_count > 0 else 0
         
-        logger.info(f"📊 Enhanced filler analysis: {filler_ratio:.3f} ({filler_count} filler words from expanded list)")
+        logger.info(f"📊 Enhanced filler analysis: {filler_ratio:.3f} ({filler_count} filler words)")
+        await self.progress_callback(self.analysis_id, 47, f"📊 Enhanced filler analysis: {filler_ratio:.3f} ({filler_count} filler words)")
         
         # Voice variety analysis (pitch and energy variation)
         voice_variety_score = self.calculate_voice_variety(audio_data, sample_rate)
@@ -286,12 +305,13 @@ class VideoAnalysisProcessor:
         sentences = re.split(r'[.!?]+', transcript_text)
         highlights = [s.strip() for s in sentences if len(s.strip()) > 50][:10]
         
-        # Progress: 45-50% for GPT-4o content analysis
         logger.info("🎓 Analyzing full transcript structure with GPT-4o...")
-        await self.progress_callback(self.analysis_id, 48, "Analyzing content structure with AI...")
+        await self.progress_callback(self.analysis_id, 48, "🎓 Analyzing full transcript structure with GPT-4o...")
+        
         content_analysis = await self.analyze_content_structure_enhanced(transcript_text)
+        
         logger.info("✅ Enhanced content structure analysis complete")
-        await self.progress_callback(self.analysis_id, 50, "Speech analysis complete!")
+        await self.progress_callback(self.analysis_id, 50, "✅ Enhanced content structure analysis complete")
         
         return {
             'transcript': transcript_text,
@@ -456,11 +476,11 @@ class VideoAnalysisProcessor:
         if not video_frames:
             return {'error': 'No video frames to analyze'}
         
-        # Use configurable max frames (now 40 instead of 10)
         max_frames = ANALYSIS_CONFIG["sampling"]["max_frames_analyzed"]
         selected_frames = video_frames[:max_frames]
         
         logger.info(f"📊 Analyzing {len(selected_frames)} frames with enhanced visual metrics")
+        await self.progress_callback(self.analysis_id, 60, f"📊 Analyzing {len(selected_frames)} frames with enhanced visual metrics")
         
         frame_analyses = []
         
@@ -468,14 +488,16 @@ class VideoAnalysisProcessor:
             frame = frame_data['frame']
             timestamp = frame_data['timestamp']
 
-            # Calculate progress for this frame within 50-75% range
-            frame_progress = 50 + int((i / len(selected_frames)) * 25)
+            # Calculate progress for this frame within 60-75% range
+            frame_progress = 60 + int((i / len(selected_frames)) * 15)
+            
+            logger.info(f"📊 Analyzing frame {i+1}/{len(selected_frames)} (t={timestamp:.1f}s)")
             await self.progress_callback(
                 self.analysis_id,
                 frame_progress,
-                f"Analyzing frame {i+1}/{len(selected_frames)} (t={timestamp:.1f}s) - {frame_progress}%"
+                f"📊 Analyzing frame {i+1}/{len(selected_frames)} (t={timestamp:.1f}s)"
             )
-            
+                   
             # Convert frame to base64 for OpenAI Vision API
             _, buffer = cv2.imencode('.jpg', frame)
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
