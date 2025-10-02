@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -165,7 +165,7 @@ async def upload_video_options():
     return {"message": "OK"}
 
 @app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     """
     Upload a lecture video for enhanced AI-powered analysis
     """
@@ -223,9 +223,9 @@ async def upload_video(file: UploadFile = File(...)):
         
         # Start enhanced analysis in background
         if AI_AVAILABLE:
-            asyncio.create_task(process_video_with_enhanced_ai(analysis_id, file_path))
+            background_tasks.add_task(process_video_with_enhanced_ai, analysis_id, file_path)
         else:
-            asyncio.create_task(process_video_mock(analysis_id, file_path))
+            background_tasks.add_task(process_video_mock, analysis_id, file_path)
         
         return {
             "analysis_id": analysis_id,
