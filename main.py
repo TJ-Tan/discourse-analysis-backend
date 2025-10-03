@@ -310,6 +310,7 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
         # Initialize with log messages array
         if analysis_id in analysis_results:
             analysis_results[analysis_id]["log_messages"] = []
+            print(f"🔥 DEBUG: Initialized log_messages array") 
         
         # Define progress callback that stores messages in log
         async def progress_callback(aid, progress, message, step_data=None):
@@ -321,7 +322,6 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                 if "log_messages" not in analysis_results[aid]:
                     analysis_results[aid]["log_messages"] = []
                 
-                from datetime import datetime
                 analysis_results[aid]["log_messages"].append({
                     "timestamp": datetime.now().isoformat(),
                     "message": message,
