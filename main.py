@@ -332,12 +332,15 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
         
         # Define progress callback that adds to existing logs
         async def progress_callback(aid, progress, message, step_data=None):
-            await update_progress(aid, progress, message, step_data)
+            if aid in analysis_results:
+                analysis_results[aid]["progress"] = progress
+                analysis_results[aid]["message"] = message
                 
-                # Add to log history
+                # Initialize log_messages if it doesn't exist
                 if "log_messages" not in analysis_results[aid]:
                     analysis_results[aid]["log_messages"] = []
                 
+                # Add message to log history
                 analysis_results[aid]["log_messages"].append({
                     "timestamp": datetime.now().isoformat(),
                     "message": message,
