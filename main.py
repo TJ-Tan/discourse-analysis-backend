@@ -212,7 +212,11 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
             "status": "processing",
             "progress": 5,
             "message": "File uploaded successfully. Starting enhanced AI analysis...",
-            "log_messages": [],
+            "log_messages": [{
+                "timestamp": datetime.now().isoformat(),
+                "message": "📤 File uploaded successfully. Preparing analysis...",
+                "progress": 5
+            }],
             "filename": file.filename,
             "file_size": file_path.stat().st_size,
             "analysis_config": {
@@ -222,6 +226,9 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
                 "enhanced_mode": True
             }
         }
+
+        # Immediately log initialization
+        print(f"🎯 INITIALIZED with {len(analysis_results[analysis_id]['log_messages'])} messages")
         
         # Add initial log message
         analysis_results[analysis_id]["log_messages"].append({
@@ -292,10 +299,11 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         analysis_results[analysis_id]["progress"] = progress
         analysis_results[analysis_id]["message"] = message
         
-        # Add message to log history
+        # Initialize log_messages if it doesn't exist
         if "log_messages" not in analysis_results[analysis_id]:
             analysis_results[analysis_id]["log_messages"] = []
         
+        # Add message to log history
         analysis_results[analysis_id]["log_messages"].append({
             "timestamp": datetime.now().isoformat(),
             "message": message,
@@ -308,24 +316,23 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
                 analysis_results[analysis_id]["step_details"] = {}
             analysis_results[analysis_id]["step_details"].update(details)
         
-        print(f"DEBUG: Updated progress for {analysis_id}: {progress}% - {message}")
+        print(f"✅ ADDED LOG: [{progress}%] {message}")
+        print(f"📊 Total logs now: {len(analysis_results[analysis_id]['log_messages'])}")
 
 async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
     Process video analysis using real AI services with detailed step tracking
     """
     try:
-        # Initialize with log messages array
-        if analysis_id in analysis_results:
-            if "log_messages" not in analysis_results[analysis_id]:
-                analysis_results[analysis_id]["log_messages"] = []
-            print(f"🔥 DEBUG: log_messages array ready")
+        print(f"🚀 BACKGROUND TASK STARTED for {analysis_id}")
         
-        # Define progress callback that stores messages in log
+        # DON'T re-initialize - just verify it exists
+        if analysis_id in analysis_results:
+            print(f"✅ Found existing result with {len(analysis_results[analysis_id].get('log_messages', []))} messages")
+        
+        # Define progress callback that adds to existing logs
         async def progress_callback(aid, progress, message, step_data=None):
-            if aid in analysis_results:
-                analysis_results[aid]["progress"] = progress
-                analysis_results[aid]["message"] = message
+            await update_progress(aid, progress, message, step_data)
                 
                 # Add to log history
                 if "log_messages" not in analysis_results[aid]:
