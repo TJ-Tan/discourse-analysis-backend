@@ -335,36 +335,11 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     try:
         print(f"🚀 BACKGROUND TASK STARTED for {analysis_id}")
         
-        # DON'T re-initialize - just verify it exists
-        if analysis_id in analysis_results:
-            print(f"✅ Found existing result with {len(analysis_results[analysis_id].get('log_messages', []))} messages")
-        
-        # Define progress callback that adds to existing logs
+        # Simple progress callback that updates state directly
         async def progress_callback(aid, progress, message, step_data=None):
-            if aid in analysis_results:
-                analysis_results[aid]["progress"] = progress
-                analysis_results[aid]["message"] = message
-                
-                # Initialize log_messages if it doesn't exist
-                if "log_messages" not in analysis_results[aid]:
-                    analysis_results[aid]["log_messages"] = []
-                
-                # Add message to log history
-                analysis_results[aid]["log_messages"].append({
-                    "timestamp": datetime.now().isoformat(),
-                    "message": message,
-                    "progress": progress
-                })
-                
-                # Update step-specific details
-                if step_data:
-                    if "details" not in analysis_results[aid]:
-                        analysis_results[aid]["details"] = {}
-                    analysis_results[aid]["details"].update(step_data)
-                
-                print(f"DEBUG: Updated progress for {aid}: {progress}% - {message}")
+            await update_progress(aid, progress, message, step_data)
         
-        # Run the AI analysis
+        # Run the AI analysis with live progress updates
         results = await video_processor.process_video(
             video_path=file_path,
             analysis_id=analysis_id,
