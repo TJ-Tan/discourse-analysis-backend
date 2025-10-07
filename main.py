@@ -212,6 +212,7 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
             "status": "processing",
             "progress": 5,
             "message": "File uploaded successfully. Starting enhanced AI analysis...",
+            "log_messages": [],
             "filename": file.filename,
             "file_size": file_path.stat().st_size,
             "analysis_config": {
@@ -221,6 +222,13 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
                 "enhanced_mode": True
             }
         }
+        
+        # Add initial log message
+        analysis_results[analysis_id]["log_messages"].append({
+            "timestamp": datetime.now().isoformat(),
+            "message": "File uploaded successfully. Starting enhanced AI analysis...",
+            "progress": 5
+        })
         
         # Start enhanced analysis in background
         if AI_AVAILABLE:
