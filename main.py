@@ -271,7 +271,16 @@ async def get_analysis_status(analysis_id: str):
     if analysis_id not in analysis_results:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    return analysis_results[analysis_id]
+    result = analysis_results[analysis_id]
+
+    # DEBUG: Print what we're returning
+    print(f"🔍 RETURNING STATUS:")
+    print(f"   - Has log_messages key: {'log_messages' in result}")
+    print(f"   - Log messages count: {len(result.get('log_messages', []))}")
+    if 'log_messages' in result and len(result['log_messages']) > 0:
+        print(f"   - First message: {result['log_messages'][0]}")
+    
+    return result
 
 @app.delete("/analysis/{analysis_id}")
 async def delete_analysis(analysis_id: str):
