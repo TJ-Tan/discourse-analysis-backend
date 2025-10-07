@@ -229,7 +229,7 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
             "message": "File uploaded successfully. Starting enhanced AI analysis...",
             "progress": 5
         })
-        
+
         # Start enhanced analysis in background
         if AI_AVAILABLE:
             background_tasks.add_task(process_video_with_enhanced_ai, analysis_id, file_path)
@@ -317,8 +317,9 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     try:
         # Initialize with log messages array
         if analysis_id in analysis_results:
-            analysis_results[analysis_id]["log_messages"] = []
-            print(f"🔥 DEBUG: Initialized log_messages array") 
+            if "log_messages" not in analysis_results[analysis_id]:
+                analysis_results[analysis_id]["log_messages"] = []
+            print(f"🔥 DEBUG: log_messages array ready")
         
         # Define progress callback that stores messages in log
         async def progress_callback(aid, progress, message, step_data=None):
