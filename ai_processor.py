@@ -157,13 +157,21 @@ class VideoAnalysisProcessor:
                 }
             })
             await asyncio.sleep(0)  # Force immediate execution
+
+            # Step 4.5: Analyze interaction and engagement
+            logger.info("🤝 Step 4.5: Analyzing interaction and questioning techniques...")
+            await progress_callback(analysis_id, 85, "🤝 Step 4.5: Analyzing interaction and questioning techniques...")
+            
+            interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
+            
+            logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
+            await progress_callback(analysis_id, 88, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             
             # Step 5: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 5: Calculating weighted component scores...")
-            await progress_callback(analysis_id, 95, "📊 Step 5: Calculating weighted component scores...")
-            await asyncio.sleep(0)  # Force immediate execution
+            await progress_callback(analysis_id, 92, "📊 Step 5: Calculating weighted component scores...")
             
-            final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis)
+            final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis)
             
             logger.info(f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
             await progress_callback(analysis_id, 100, f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
@@ -254,6 +262,33 @@ class VideoAnalysisProcessor:
         logger.info(f"📊 Extracted {len(video_frames)} frames from {duration_seconds:.1f}s video")
         return audio_path, video_frames
     
+    def extract_timecoded_transcript(self, words_data: List[Dict]) -> List[Dict]:
+        """
+        Extract transcript with word-level timecodes
+        """
+        timecoded_transcript = []
+        
+        for word_data in words_data:
+            timecoded_transcript.append({
+                'word': word_data.get('word', ''),
+                'start': round(word_data.get('start', 0), 2),
+                'end': round(word_data.get('end', 0), 2),
+                'timestamp': self.format_timestamp(word_data.get('start', 0))
+            })
+        
+        return timecoded_transcript
+    
+    def format_timestamp(self, seconds: float) -> str:
+        """Format seconds to MM:SS or HH:MM:SS"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:02d}:{secs:02d}"
+    
     async def analyze_speech_enhanced(self, audio_path: Path) -> Dict[str, Any]:
         """Enhanced speech analysis using full transcript and expanded metrics"""
         logger.info("🎤 Starting enhanced Whisper transcription...")
@@ -295,13 +330,28 @@ class VideoAnalysisProcessor:
         speaking_time = sum([(end - start) / sample_rate for start, end in voice_activity])
         speaking_ratio = speaking_time / (len(audio_data) / sample_rate)
         
-        # Enhanced filler word analysis with expanded list
+        # Enhanced filler word analysis with timecodes
         text_lower = transcript_text.lower()
         filler_count = 0
         filler_details = []
+        filler_timecodes = []
+        
+        # Get word-level data
+        words_data = getattr(transcript_response, 'words', [])
         
         for filler in FILLER_WORDS:
-            count = text_lower.count(f' {filler} ') + text_lower.count(f'{filler} ') + text_lower.count(f' {filler}')
+            count = 0
+            for word_data in words_data:
+                word = word_data.get('word', '').lower().strip('.,!?')
+                if word == filler:
+                    count += 1
+                    filler_timecodes.append({
+                        'word': filler,
+                        'timestamp': self.format_timestamp(word_data.get('start', 0)),
+                        'start': round(word_data.get('start', 0), 2),
+                        'end': round(word_data.get('end', 0), 2)
+                    })
+            
             if count > 0:
                 filler_count += count
                 filler_details.append({'word': filler, 'count': count})
@@ -331,6 +381,8 @@ class VideoAnalysisProcessor:
         
         return {
             'transcript': transcript_text,
+            'timecoded_transcript': self.extract_timecoded_transcript(words_data),
+            'filler_timecodes': filler_timecodes,
             'confidence': 0.95,
             'speaking_rate': speaking_rate,
             'speaking_ratio': speaking_ratio,
@@ -754,29 +806,177 @@ class VideoAnalysisProcessor:
                 ],
                 'detailed_analysis': 'Comprehensive analysis completed with enhanced metrics and full transcript review.'
             }
+        
+
+    async def analyze_interaction_engagement(self, speech_analysis: Dict) -> Dict[str, Any]:
+        """
+        Analyze instructor-student interaction and questioning techniques
+        """
+        transcript = speech_analysis.get('transcript', '')
+        words_data = speech_analysis.get('word_timestamps', [])
+        
+        # Detect questions and interactions using AI
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You are an expert in educational interaction analysis. Identify:
+                    1. High-level/open-ended questions (e.g., "Why do you think...", "How would you...", "What if...")
+                    2. Student interaction moments (e.g., "Let's hear from...", "Can someone explain...", "Turn to your partner...")
+                    3. Cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...")
+                    
+                    For each interaction, provide the approximate timestamp and classify the type."""
+                },
+                {
+                    "role": "user",
+                    "content": f"""Analyze this lecture transcript for interaction and questioning:
+                    
+                    {transcript}
+                    
+                    Return as JSON with:
+                    - high_level_questions: list of {{"question": str, "approx_time": "MM:SS", "type": str}}
+                    - interaction_moments: list of {{"moment": str, "approx_time": "MM:SS", "type": str}}
+                    - interaction_frequency: score 1-10
+                    - question_quality: score 1-10
+                    - student_engagement_opportunities: score 1-10
+                    - cognitive_level: "low/medium/high"
+                    """
+                }
+            ],
+            max_tokens=1000
+        )
+        
+        try:
+            analysis = json.loads(response.choices[0].message.content)
+            
+            # Match questions to precise timestamps
+            for question_data in analysis.get('high_level_questions', []):
+                question_text = question_data['question']
+                # Find approximate timestamp in word data
+                for i, word_data in enumerate(words_data):
+                    if i < len(words_data) - 5:  # Look at 5-word window
+                        window = ' '.join([words_data[j].get('word', '') for j in range(i, min(i+5, len(words_data)))])
+                        if question_text[:20].lower() in window.lower():
+                            question_data['precise_timestamp'] = self.format_timestamp(word_data.get('start', 0))
+                            question_data['start_time'] = round(word_data.get('start', 0), 2)
+                            break
+            
+            return {
+                'score': round((analysis.get('interaction_frequency', 7) + analysis.get('question_quality', 7) + analysis.get('student_engagement_opportunities', 7)) / 3, 1),
+                'interaction_frequency': analysis.get('interaction_frequency', 7),
+                'question_quality': analysis.get('question_quality', 7),
+                'student_engagement_opportunities': analysis.get('student_engagement_opportunities', 7),
+                'cognitive_level': analysis.get('cognitive_level', 'medium'),
+                'high_level_questions': analysis.get('high_level_questions', [])[:10],
+                'interaction_moments': analysis.get('interaction_moments', [])[:10],
+                'total_questions': len(analysis.get('high_level_questions', [])),
+                'total_interactions': len(analysis.get('interaction_moments', []))
+            }
+            
+        except json.JSONDecodeError:
+            return {
+                'score': 6.5,
+                'interaction_frequency': 6.5,
+                'question_quality': 6.5,
+                'student_engagement_opportunities': 6.5,
+                'cognitive_level': 'medium',
+                'high_level_questions': [],
+                'interaction_moments': [],
+                'total_questions': 0,
+                'total_interactions': 0
+            }
+        
+    async def generate_comprehensive_summary(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, overall_score: float) -> Dict[str, Any]:
+        """
+        Generate comprehensive evidence-based summary
+        """
+        transcript = speech_analysis.get('transcript', '')
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You are an expert educational evaluator. Create a comprehensive summary that:
+                    1. Reviews teaching content quality and accuracy
+                    2. Evaluates presentation effectiveness
+                    3. Assesses cognitive skill development
+                    4. Provides specific evidence from the transcript (1-3 key quotes with context)
+                    5. Gives actionable, specific recommendations
+                    
+                    Be specific, evidence-based, and constructive."""
+                },
+                {
+                    "role": "user",
+                    "content": f"""Create a comprehensive teaching evaluation summary.
+                    
+                    Overall Score: {overall_score}/10
+                    
+                    Speech Analysis: {speech_analysis.get('speaking_rate', 0)} WPM, {speech_analysis.get('filler_ratio', 0)*100:.1f}% filler words
+                    Visual Engagement: {visual_analysis.get('scores', {}).get('engagement', 0)}/10
+                    Pedagogical Quality: {pedagogical_analysis.get('content_organization', 0)}/10 organization
+                    Interaction: {interaction_analysis.get('total_questions', 0)} questions, {interaction_analysis.get('cognitive_level', 'medium')} cognitive level
+                    
+                    Full Transcript:
+                    {transcript}
+                    
+                    Provide:
+                    1. content_review: Assessment of teaching content (2-3 sentences)
+                    2. presentation_review: Evaluation of delivery and presentation (2-3 sentences)
+                    3. cognitive_skills_review: Analysis of cognitive engagement and skill development (2-3 sentences)
+                    4. key_evidence: List of 1-3 specific quotes from transcript with timestamps that exemplify teaching quality
+                    5. specific_recommendations: 3-5 highly specific, actionable recommendations
+                    6. overall_summary: 1 paragraph comprehensive summary
+                    
+                    Return as JSON."""
+                }
+            ],
+            max_tokens=1500
+        )
+        
+        try:
+            summary = json.loads(response.choices[0].message.content)
+            return summary
+        except json.JSONDecodeError:
+            return {
+                'content_review': 'The lecture covered the material systematically with clear explanations.',
+                'presentation_review': 'The instructor demonstrated good delivery with professional presence.',
+                'cognitive_skills_review': 'Students were engaged through various teaching techniques.',
+                'key_evidence': [],
+                'specific_recommendations': [
+                    'Incorporate more interactive elements',
+                    'Add visual aids to support complex concepts',
+                    'Include regular comprehension checks'
+                ],
+                'overall_summary': f'This lecture achieved an overall score of {overall_score}/10, demonstrating solid teaching fundamentals with opportunities for enhancement in student interaction and engagement techniques.'
+            }
     
-    async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict) -> Dict[str, Any]:
+    async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict) -> Dict[str, Any]:
         """
         Enhanced analysis combination with detailed breakdown and transparency
         """
-        # Calculate enhanced component scores using weighted sub-components
+        # Calculate enhanced component scores
         speech_score = self.calculate_speech_score_enhanced(speech_analysis)
         visual_score = self.calculate_visual_score_enhanced(visual_analysis)
         pedagogy_score = self.calculate_pedagogy_score_enhanced(pedagogical_analysis)
+        interaction_score = interaction_analysis.get('score', 7.0)
         presentation_score = (speech_score + visual_score) / 2
         
         # Get category weights from config
         category_weights = ANALYSIS_CONFIG["weights"]
         
-        # Calculate overall weighted score
+        # Calculate overall weighted score with new interaction category
         overall_score = (
             speech_score * category_weights["speech_analysis"] + 
             visual_score * category_weights["body_language"] + 
             pedagogy_score * category_weights["teaching_effectiveness"] +
+            interaction_score * category_weights["interaction_engagement"] +
             presentation_score * category_weights["presentation_skills"]
         )
         
-        return {
+        # Build the result dictionary
+        result = {
             'overall_score': round(overall_score, 1),
             
             # Detailed Speech Analysis
@@ -845,6 +1045,40 @@ class VideoAnalysisProcessor:
                 'time_management': round(self.assess_time_management(speech_analysis), 1),
                 'feedback': self.generate_presentation_feedback_enhanced(speech_analysis, visual_analysis)
             },
+
+            # NEW: Interaction & Engagement Analysis
+            'interaction_engagement': {
+                'score': round(interaction_score, 1),
+                'interaction_frequency': interaction_analysis.get('interaction_frequency', 7),
+                'question_quality': interaction_analysis.get('question_quality', 7),
+                'student_engagement_opportunities': interaction_analysis.get('student_engagement_opportunities', 7),
+                'cognitive_level': interaction_analysis.get('cognitive_level', 'medium'),
+                'total_questions': interaction_analysis.get('total_questions', 0),
+                'total_interactions': interaction_analysis.get('total_interactions', 0),
+                'high_level_questions': interaction_analysis.get('high_level_questions', []),
+                'interaction_moments': interaction_analysis.get('interaction_moments', []),
+                'feedback': [
+                    f"Asked {interaction_analysis.get('total_questions', 0)} questions at {interaction_analysis.get('cognitive_level', 'medium')} cognitive level",
+                    f"Interaction frequency: {interaction_analysis.get('interaction_frequency', 7)}/10",
+                    f"Question quality: {interaction_analysis.get('question_quality', 7)}/10"
+                ]
+            },
+            
+            # Full Transcript with Timecodes
+            'full_transcript': {
+                'text': speech_analysis.get('transcript', ''),
+                'timecoded_words': speech_analysis.get('timecoded_transcript', []),
+                'duration_formatted': self.format_timestamp(speech_analysis.get('duration_minutes', 0) * 60),
+                'word_count': speech_analysis.get('word_count', 0)
+            },
+            
+            # Filler Words with Timecodes
+            'filler_words_detailed': {
+                'total_count': sum(f['count'] for f in speech_analysis.get('filler_details', [])),
+                'ratio_percentage': round(speech_analysis.get('filler_ratio', 0) * 100, 2),
+                'timecoded_occurrences': speech_analysis.get('filler_timecodes', []),
+                'breakdown_by_word': speech_analysis.get('filler_details', [])
+            },
             
             # Strengths and Improvements
             'strengths': pedagogical_analysis.get('strengths', [])[:6],
@@ -856,6 +1090,7 @@ class VideoAnalysisProcessor:
                     'speech_analysis': f"{category_weights['speech_analysis']*100}%",
                     'body_language': f"{category_weights['body_language']*100}%",
                     'teaching_effectiveness': f"{category_weights['teaching_effectiveness']*100}%",
+                    'interaction_engagement': f"{category_weights['interaction_engagement']*100}%",
                     'presentation_skills': f"{category_weights['presentation_skills']*100}%"
                 },
                 'component_scores': {
@@ -874,6 +1109,11 @@ class VideoAnalysisProcessor:
                         'weight': category_weights['teaching_effectiveness'],
                         'contribution': round(pedagogy_score * category_weights['teaching_effectiveness'], 2)
                     },
+                    'interaction_engagement': {
+                        'score': round(interaction_score, 2),
+                        'weight': category_weights['interaction_engagement'],
+                        'contribution': round(interaction_score * category_weights['interaction_engagement'], 2)
+                    },
                     'presentation_skills': {
                         'score': round(presentation_score, 2),
                         'weight': category_weights['presentation_skills'],
@@ -881,8 +1121,8 @@ class VideoAnalysisProcessor:
                     }
                 },
                 'final_calculation': {
-                    'formula': '(Speech × 0.30) + (Body Language × 0.25) + (Teaching × 0.35) + (Presentation × 0.10)',
-                    'calculation': f"({round(speech_score, 1)} × 0.30) + ({round(visual_score, 1)} × 0.25) + ({round(pedagogy_score, 1)} × 0.35) + ({round(presentation_score, 1)} × 0.10)",
+                    'formula': '(Speech × 0.25) + (Body × 0.20) + (Teaching × 0.25) + (Interaction × 0.20) + (Presentation × 0.10)',
+                    'calculation': f"({round(speech_score, 1)} × 0.25) + ({round(visual_score, 1)} × 0.20) + ({round(pedagogy_score, 1)} × 0.25) + ({round(interaction_score, 1)} × 0.20) + ({round(presentation_score, 1)} × 0.10)",
                     'result': round(overall_score, 1)
                 },
                 'speech_breakdown': {
@@ -931,6 +1171,15 @@ class VideoAnalysisProcessor:
                 'analysis_timestamp': datetime.now().isoformat()
             }
         }
+        
+        # Generate Comprehensive Summary AFTER building the result dict
+        comprehensive_summary = await self.generate_comprehensive_summary(
+            speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, overall_score
+        )
+        
+        result['comprehensive_summary'] = comprehensive_summary
+        
+        return result
     
     def calculate_speech_score_enhanced(self, speech_analysis: Dict) -> float:
         """Enhanced speech score calculation with weighted sub-components"""

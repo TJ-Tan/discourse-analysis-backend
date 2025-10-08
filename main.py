@@ -104,6 +104,7 @@ analysis_results = {}
 
 # Configuration
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+MAX_VIDEO_DURATION = 3600  # 1 hour in seconds
 ALLOWED_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
 
 @app.get("/")

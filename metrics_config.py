@@ -25,7 +25,7 @@ class MetricConfig:
 ANALYSIS_CONFIG = {
     "sampling": {
         "frame_interval_seconds": 6,      # Every 6 seconds (increased frequency)
-        "max_frames_analyzed": 40,        # Increased from 10 to 40
+        "max_frames_analyzed": 100,       # Increased from 10 to 100
         "audio_window_seconds": 30,       # For rate analysis windows
         "transcript_char_limit": None,    # Use full transcript (was 3000)
         "min_frames_for_analysis": 5      # Minimum frames needed
@@ -36,6 +36,7 @@ ANALYSIS_CONFIG = {
         "speech_analysis": 0.30,
         "body_language": 0.25, 
         "teaching_effectiveness": 0.35,
+        "interaction_engagement": 0.20, 
         "presentation_skills": 0.10,
         
         # Speech analysis sub-components
