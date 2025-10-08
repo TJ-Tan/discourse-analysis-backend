@@ -10,6 +10,7 @@ import uuid
 import asyncio
 from datetime import datetime 
 from dotenv import load_dotenv
+import json
 
 # Load environment variables
 load_dotenv()
