@@ -342,27 +342,34 @@ async def delete_analysis(analysis_id: str):
 @app.get("/stream/{analysis_id}")
 async def stream_progress(analysis_id: str):
     """
-    Server-Sent Events endpoint for real-time updates
+    Server-Sent Events endpoint for real-time updates with minimal delay
     """
     async def event_generator():
         last_sent_count = 0
+        last_progress = 0
         max_wait = 300  # 5 minutes timeout
         elapsed = 0
+        
+        # Send initial connection message
+        yield f"data: {json.dumps({'type': 'connected', 'data': {'message': 'Real-time connection established'}})}\n\n"
         
         while elapsed < max_wait:
             if analysis_id in analysis_results:
                 result = analysis_results[analysis_id]
                 current_log_count = len(result.get('log_messages', []))
+                current_progress = result.get('progress', 0)
                 
-                # Send new log messages
+                # Send new log messages immediately
                 if current_log_count > last_sent_count:
                     new_logs = result.get('log_messages', [])[last_sent_count:]
                     for log in new_logs:
                         yield f"data: {json.dumps({'type': 'log', 'data': log})}\n\n"
                     last_sent_count = current_log_count
                 
-                # Send status update
-                yield f"data: {json.dumps({'type': 'status', 'data': {'progress': result.get('progress', 0), 'message': result.get('message', ''), 'status': result.get('status', 'processing')}})}\n\n"
+                # Send status update if progress changed
+                if current_progress != last_progress:
+                    yield f"data: {json.dumps({'type': 'status', 'data': {'progress': current_progress, 'message': result.get('message', ''), 'status': result.get('status', 'processing')}})}\n\n"
+                    last_progress = current_progress
                 
                 # If completed, send final message and stop
                 if result.get('status') == 'completed':
@@ -372,20 +379,23 @@ async def stream_progress(analysis_id: str):
                     yield f"data: {json.dumps({'type': 'error', 'data': result})}\n\n"
                     break
             
-            await asyncio.sleep(1)
-            elapsed += 1
+            # Faster polling - check every 0.3 seconds for more responsiveness
+            await asyncio.sleep(0.3)
+            elapsed += 0.3
         
         # Timeout reached
-        yield f"data: {json.dumps({'type': 'timeout', 'data': {'message': 'Connection timeout'}})}\n\n"
+        if elapsed >= max_wait:
+            yield f"data: {json.dumps({'type': 'timeout', 'data': {'message': 'Connection timeout'}})}\n\n"
     
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Content-Type": "text/event-stream; charset=utf-8"
         }
     )
 
