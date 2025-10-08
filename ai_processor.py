@@ -756,13 +756,13 @@ class VideoAnalysisProcessor:
     
     async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict) -> Dict[str, Any]:
         """
-        Enhanced analysis combination with weighted sub-components from config
+        Enhanced analysis combination with detailed breakdown and transparency
         """
         # Calculate enhanced component scores using weighted sub-components
         speech_score = self.calculate_speech_score_enhanced(speech_analysis)
         visual_score = self.calculate_visual_score_enhanced(visual_analysis)
         pedagogy_score = self.calculate_pedagogy_score_enhanced(pedagogical_analysis)
-        presentation_score = (speech_score + visual_score) / 2  # Derived score
+        presentation_score = (speech_score + visual_score) / 2
         
         # Get category weights from config
         category_weights = ANALYSIS_CONFIG["weights"]
@@ -777,57 +777,157 @@ class VideoAnalysisProcessor:
         
         return {
             'overall_score': round(overall_score, 1),
+            
+            # Detailed Speech Analysis
             'speech_analysis': {
                 'score': round(speech_score, 1),
-                'speaking_rate': speech_analysis.get('speaking_rate', 0),
-                'clarity': 10 - (speech_analysis.get('filler_ratio', 0) * 20),
-                'pace': min(10, max(1, 10 - abs(speech_analysis.get('speaking_rate', 150) - 150) / 20)),
-                'confidence': speech_analysis.get('confidence', 0.8) * 10,
-                'voice_variety': speech_analysis.get('voice_variety_score', 0.5) * 10,
-                'pause_effectiveness': speech_analysis.get('pause_effectiveness_score', 0.5) * 10,
-                'feedback': self.generate_speech_feedback_enhanced(speech_analysis)
+                'speaking_rate': round(speech_analysis.get('speaking_rate', 0), 1),
+                'clarity': round(10 - (speech_analysis.get('filler_ratio', 0) * 20), 1),
+                'pace': round(min(10, max(1, 10 - abs(speech_analysis.get('speaking_rate', 150) - 150) / 20)), 1),
+                'confidence': round(speech_analysis.get('confidence', 0.8) * 10, 1),
+                'voice_variety': round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1),
+                'pause_effectiveness': round(speech_analysis.get('pause_effectiveness_score', 0.5) * 10, 1),
+                'feedback': self.generate_speech_feedback_enhanced(speech_analysis),
+                # Raw metrics
+                'raw_metrics': {
+                    'total_words': speech_analysis.get('word_count', 0),
+                    'duration_minutes': round(speech_analysis.get('duration_minutes', 0), 2),
+                    'words_per_minute': round(speech_analysis.get('speaking_rate', 0), 1),
+                    'filler_word_count': sum(f['count'] for f in speech_analysis.get('filler_details', [])),
+                    'filler_ratio_percentage': round(speech_analysis.get('filler_ratio', 0) * 100, 2),
+                    'speaking_time_ratio': round(speech_analysis.get('speaking_ratio', 0.7) * 100, 1),
+                    'voice_variety_index': round(speech_analysis.get('voice_variety_score', 0.5), 3),
+                    'pause_effectiveness_index': round(speech_analysis.get('pause_effectiveness_score', 0.5), 3),
+                    'transcription_confidence': round(speech_analysis.get('confidence', 0.8) * 100, 1)
+                }
             },
+            
+            # Detailed Body Language Analysis
             'body_language': {
                 'score': round(visual_score, 1),
-                'eye_contact': visual_analysis.get('scores', {}).get('eye_contact', 7),
-                'gestures': visual_analysis.get('scores', {}).get('gestures', 7),
-                'posture': visual_analysis.get('scores', {}).get('posture', 7),
-                'engagement': visual_analysis.get('scores', {}).get('engagement', 7),
-                'professionalism': visual_analysis.get('scores', {}).get('professionalism', 8),
+                'eye_contact': round(visual_analysis.get('scores', {}).get('eye_contact', 7), 1),
+                'gestures': round(visual_analysis.get('scores', {}).get('gestures', 7), 1),
+                'posture': round(visual_analysis.get('scores', {}).get('posture', 7), 1),
+                'engagement': round(visual_analysis.get('scores', {}).get('engagement', 7), 1),
+                'professionalism': round(visual_analysis.get('scores', {}).get('professionalism', 8), 1),
                 'frames_analyzed': visual_analysis.get('frames_analyzed', 0),
-                'feedback': self.generate_visual_feedback_enhanced(visual_analysis)
+                'feedback': self.generate_visual_feedback_enhanced(visual_analysis),
+                # Raw metrics
+                'raw_metrics': {
+                    'total_frames_extracted': visual_analysis.get('frames_analyzed', 0),
+                    'frame_interval_seconds': ANALYSIS_CONFIG["sampling"]["frame_interval_seconds"],
+                    'eye_contact_raw': round(visual_analysis.get('scores', {}).get('eye_contact', 7), 2),
+                    'gestures_raw': round(visual_analysis.get('scores', {}).get('gestures', 7), 2),
+                    'posture_raw': round(visual_analysis.get('scores', {}).get('posture', 7), 2),
+                    'engagement_raw': round(visual_analysis.get('scores', {}).get('engagement', 7), 2),
+                    'professionalism_raw': round(visual_analysis.get('scores', {}).get('professionalism', 8), 2)
+                }
             },
+            
+            # Detailed Teaching Effectiveness
             'teaching_effectiveness': {
                 'score': round(pedagogy_score, 1),
-                'content_organization': pedagogical_analysis.get('content_organization', 7),
-                'engagement_techniques': pedagogical_analysis.get('engagement_techniques', 7),
-                'communication_clarity': pedagogical_analysis.get('communication_clarity', 7),
-                'use_of_examples': pedagogical_analysis.get('use_of_examples', 7),
-                'knowledge_checking': pedagogical_analysis.get('knowledge_checking', 7),
+                'content_organization': round(pedagogical_analysis.get('content_organization', 7), 1),
+                'engagement_techniques': round(pedagogical_analysis.get('engagement_techniques', 7), 1),
+                'communication_clarity': round(pedagogical_analysis.get('communication_clarity', 7), 1),
+                'use_of_examples': round(pedagogical_analysis.get('use_of_examples', 7), 1),
+                'knowledge_checking': round(pedagogical_analysis.get('knowledge_checking', 7), 1),
                 'feedback': pedagogical_analysis.get('recommendations', [])
             },
+            
+            # Presentation Skills
             'presentation_skills': {
                 'score': round(presentation_score, 1),
-                'professionalism': visual_analysis.get('scores', {}).get('professionalism', 8),
-                'energy': speech_analysis.get('speaking_ratio', 0.7) * 10,
-                'voice_modulation': speech_analysis.get('voice_variety_score', 0.5) * 10,
-                'time_management': self.assess_time_management(speech_analysis),
+                'professionalism': round(visual_analysis.get('scores', {}).get('professionalism', 8), 1),
+                'energy': round(speech_analysis.get('speaking_ratio', 0.7) * 10, 1),
+                'voice_modulation': round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1),
+                'time_management': round(self.assess_time_management(speech_analysis), 1),
                 'feedback': self.generate_presentation_feedback_enhanced(speech_analysis, visual_analysis)
             },
-            'strengths': pedagogical_analysis.get('strengths', []),
-            'improvement_suggestions': pedagogical_analysis.get('improvements', []),
+            
+            # Strengths and Improvements
+            'strengths': pedagogical_analysis.get('strengths', [])[:6],
+            'improvement_suggestions': pedagogical_analysis.get('improvements', [])[:6],
+            
+            # DETAILED CALCULATION BREAKDOWN
+            'calculation_breakdown': {
+                'category_weights': {
+                    'speech_analysis': f"{category_weights['speech_analysis']*100}%",
+                    'body_language': f"{category_weights['body_language']*100}%",
+                    'teaching_effectiveness': f"{category_weights['teaching_effectiveness']*100}%",
+                    'presentation_skills': f"{category_weights['presentation_skills']*100}%"
+                },
+                'component_scores': {
+                    'speech_analysis': {
+                        'score': round(speech_score, 2),
+                        'weight': category_weights['speech_analysis'],
+                        'contribution': round(speech_score * category_weights['speech_analysis'], 2)
+                    },
+                    'body_language': {
+                        'score': round(visual_score, 2),
+                        'weight': category_weights['body_language'],
+                        'contribution': round(visual_score * category_weights['body_language'], 2)
+                    },
+                    'teaching_effectiveness': {
+                        'score': round(pedagogy_score, 2),
+                        'weight': category_weights['teaching_effectiveness'],
+                        'contribution': round(pedagogy_score * category_weights['teaching_effectiveness'], 2)
+                    },
+                    'presentation_skills': {
+                        'score': round(presentation_score, 2),
+                        'weight': category_weights['presentation_skills'],
+                        'contribution': round(presentation_score * category_weights['presentation_skills'], 2)
+                    }
+                },
+                'final_calculation': {
+                    'formula': '(Speech × 0.30) + (Body Language × 0.25) + (Teaching × 0.35) + (Presentation × 0.10)',
+                    'calculation': f"({round(speech_score, 1)} × 0.30) + ({round(visual_score, 1)} × 0.25) + ({round(pedagogy_score, 1)} × 0.35) + ({round(presentation_score, 1)} × 0.10)",
+                    'result': round(overall_score, 1)
+                },
+                'speech_breakdown': {
+                    'components': category_weights['speech_components'],
+                    'scores': {
+                        'speaking_rate': round(calculate_metric_score(speech_analysis.get('speaking_rate', 150), SPEECH_METRICS["speaking_rate"]), 2),
+                        'clarity': round(calculate_metric_score(speech_analysis.get('confidence', 0.8), SPEECH_METRICS["speaking_clarity"]), 2),
+                        'confidence': round(calculate_metric_score(speech_analysis.get('confidence', 0.8), SPEECH_METRICS["speaking_clarity"]), 2),
+                        'voice_variety': round(calculate_metric_score(speech_analysis.get('voice_variety_score', 0.5), SPEECH_METRICS["voice_variety"]), 2),
+                        'pause_effectiveness': round(calculate_metric_score(speech_analysis.get('pause_effectiveness_score', 0.5), SPEECH_METRICS["pause_effectiveness"]), 2)
+                    }
+                },
+                'visual_breakdown': {
+                    'components': category_weights['visual_components'],
+                    'scores': visual_analysis.get('scores', {})
+                },
+                'pedagogy_breakdown': {
+                    'components': category_weights['pedagogy_components'],
+                    'scores': {
+                        'content_organization': pedagogical_analysis.get('content_organization', 7),
+                        'engagement_techniques': pedagogical_analysis.get('engagement_techniques', 7),
+                        'communication_clarity': pedagogical_analysis.get('communication_clarity', 7),
+                        'use_of_examples': pedagogical_analysis.get('use_of_examples', 7),
+                        'knowledge_checking': pedagogical_analysis.get('knowledge_checking', 7)
+                    }
+                }
+            },
+            
+            # Additional Insights
             'detailed_insights': {
                 'transcript_summary': speech_analysis.get('transcript', '')[:800] + '...',
-                'key_highlights': speech_analysis.get('highlights', []),
+                'transcript_length': len(speech_analysis.get('transcript', '')),
+                'key_highlights': speech_analysis.get('highlights', [])[:8],
                 'visual_observations': visual_analysis.get('observations', [])[:10],
                 'filler_word_analysis': speech_analysis.get('filler_details', []),
                 'temporal_visual_data': visual_analysis.get('temporal_analysis', {})
             },
+            
+            # Configuration Used
             'configuration_used': {
                 'frames_analyzed': visual_analysis.get('frames_analyzed', 0),
+                'frame_interval': ANALYSIS_CONFIG["sampling"]["frame_interval_seconds"],
                 'transcript_length': len(speech_analysis.get('transcript', '')),
                 'category_weights': category_weights,
-                'filler_words_detected': len(speech_analysis.get('filler_details', []))
+                'filler_words_detected': len(speech_analysis.get('filler_details', [])),
+                'analysis_timestamp': datetime.now().isoformat()
             }
         }
     
