@@ -66,18 +66,22 @@ class VideoAnalysisProcessor:
 
             logger.info(f"🎬 Starting enhanced video analysis for {analysis_id}")
             await progress_callback(analysis_id, 5, f"🎬 Starting enhanced video analysis for {analysis_id}")
+            await asyncio.sleep(0)  # Force immediate execution
             
             logger.info(f"📁 File: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f}MB)")
             await progress_callback(analysis_id, 6, f"📁 File: {video_path.name} ({video_path.stat().st_size / (1024*1024):.1f}MB)")
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Step 1: Extract audio and video components with enhanced sampling
             logger.info("🔧 Step 1: Extracting audio and video components...")
             await progress_callback(analysis_id, 10, "🔧 Step 1: Extracting audio and video components...")
+            await asyncio.sleep(0)  # Force immediate execution
             
             audio_path, video_frames = await self.extract_components(video_path)
             
             logger.info(f"✅ Extracted {len(video_frames)} video frames and audio track")
             await progress_callback(analysis_id, 20, f"✅ Extracted {len(video_frames)} video frames and audio track")
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Get video metadata
             cap_temp = cv2.VideoCapture(str(video_path))
@@ -95,10 +99,12 @@ class VideoAnalysisProcessor:
                     "video_resolution": "640x480"
                 }
             })
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Step 2: Enhanced speech analysis with full transcript
             logger.info("🎤 Step 2: Analyzing speech with Whisper...")
             await progress_callback(analysis_id, 30, "🎤 Step 2: Analyzing speech with Whisper...")
+            await asyncio.sleep(0)  # Force immediate execution
             
             speech_analysis = await self.analyze_speech_enhanced(audio_path)
             
@@ -113,6 +119,7 @@ class VideoAnalysisProcessor:
                     "filler_words": len(speech_analysis.get('filler_details', []))
                 }
             })
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Step 3: Enhanced visual analysis with more frames
             logger.info("👁️ Step 3: Analyzing visual elements with GPT-4o Vision...")
@@ -130,10 +137,12 @@ class VideoAnalysisProcessor:
                     "posture": f"{visual_analysis.get('scores', {}).get('posture', 0):.1f}/10"
                 }
             })
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Step 4: Enhanced pedagogical assessment with full transcript
             logger.info("🎓 Step 4: Generating comprehensive pedagogical insights...")
             await progress_callback(analysis_id, 80, "🎓 Step 4: Generating comprehensive pedagogical insights...")
+            await asyncio.sleep(0)  # Force immediate execution
             
             pedagogical_analysis = await self.analyze_pedagogy_enhanced(speech_analysis, visual_analysis)
             
@@ -146,15 +155,18 @@ class VideoAnalysisProcessor:
                     "teaching_effectiveness": f"{pedagogical_analysis.get('overall_effectiveness', 0):.1f}/10"
                 }
             })
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Step 5: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 5: Calculating weighted component scores...")
             await progress_callback(analysis_id, 95, "📊 Step 5: Calculating weighted component scores...")
+            await asyncio.sleep(0)  # Force immediate execution
             
             final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis)
             
             logger.info(f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
             await progress_callback(analysis_id, 100, f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
+            await asyncio.sleep(0)  # Force immediate execution
             
             # Cleanup temporary files
             await self.cleanup_temp_files(audio_path, video_frames)
@@ -165,6 +177,7 @@ class VideoAnalysisProcessor:
         except Exception as e:
             logger.error(f"❌ Enhanced video analysis failed for {analysis_id}: {str(e)}")
             await progress_callback(analysis_id, 0, f"❌ Analysis failed: {str(e)}")
+            await asyncio.sleep(0)  # Force immediate execution
             raise Exception(f"Enhanced video analysis failed: {str(e)}")
     
     async def extract_components(self, video_path: Path):
