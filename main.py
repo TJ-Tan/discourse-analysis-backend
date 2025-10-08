@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -22,6 +22,41 @@ try:
 except ImportError:
     AI_AVAILABLE = False
     print("Warning: Enhanced AI processor not available. Running in mock mode.")
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, analysis_id: str):
+        await websocket.accept()
+        if analysis_id not in self.active_connections:
+            self.active_connections[analysis_id] = []
+        self.active_connections[analysis_id].append(websocket)
+        print(f"✅ WebSocket connected for {analysis_id}")
+
+    def disconnect(self, websocket: WebSocket, analysis_id: str):
+        if analysis_id in self.active_connections:
+            self.active_connections[analysis_id].remove(websocket)
+            if len(self.active_connections[analysis_id]) == 0:
+                del self.active_connections[analysis_id]
+        print(f"❌ WebSocket disconnected for {analysis_id}")
+
+    async def send_update(self, analysis_id: str, message: dict):
+        if analysis_id in self.active_connections:
+            dead_connections = []
+            for connection in self.active_connections[analysis_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    print(f"⚠️ Failed to send to WebSocket: {e}")
+                    dead_connections.append(connection)
+            
+            # Clean up dead connections
+            for dead in dead_connections:
+                self.disconnect(dead, analysis_id)
+
+manager = ConnectionManager()
 
 # Create FastAPI app
 app = FastAPI(title="Enhanced Discourse Analysis API", version="3.0.0")
@@ -300,9 +335,34 @@ async def delete_analysis(analysis_id: str):
     
     raise HTTPException(status_code=404, detail="Analysis not found")
 
+@app.websocket("/ws/{analysis_id}")
+async def websocket_endpoint(websocket: WebSocket, analysis_id: str):
+    """
+    WebSocket endpoint for real-time analysis updates
+    """
+    await manager.connect(websocket, analysis_id)
+    try:
+        # Send initial state if available
+        if analysis_id in analysis_results:
+            await websocket.send_json({
+                "type": "status_update",
+                "data": analysis_results[analysis_id]
+            })
+        
+        # Keep connection alive and listen for messages
+        while True:
+            data = await websocket.receive_text()
+            # Echo back for ping/pong
+            await websocket.send_text(data)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, analysis_id)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        manager.disconnect(websocket, analysis_id)
+
 async def update_progress(analysis_id: str, progress: int, message: str, details: dict = None):
     """
-    Helper function to update analysis progress with optional details and message history
+    Helper function to update analysis progress with WebSocket broadcasting
     """
     if analysis_id in analysis_results:
         analysis_results[analysis_id]["progress"] = progress
@@ -313,11 +373,12 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
             analysis_results[analysis_id]["log_messages"] = []
         
         # Add message to log history
-        analysis_results[analysis_id]["log_messages"].append({
+        log_entry = {
             "timestamp": datetime.now().isoformat(),
             "message": message,
             "progress": progress
-        })
+        }
+        analysis_results[analysis_id]["log_messages"].append(log_entry)
         
         # Add step-specific details
         if details:
@@ -325,8 +386,18 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
                 analysis_results[analysis_id]["step_details"] = {}
             analysis_results[analysis_id]["step_details"].update(details)
         
-        print(f"✅ ADDED LOG: [{progress}%] {message}")
-        print(f"📊 Total logs now: {len(analysis_results[analysis_id]['log_messages'])}")
+        print(f"✅ Progress: [{progress}%] {message}")
+        
+        # Broadcast update via WebSocket
+        await manager.send_update(analysis_id, {
+            "type": "progress_update",
+            "data": {
+                "progress": progress,
+                "message": message,
+                "log_entry": log_entry,
+                "status": analysis_results[analysis_id]["status"]
+            }
+        })
 
 async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
@@ -354,6 +425,12 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                 "message": "AI analysis completed successfully!",
                 "results": results,
                 "processing_time": "Real AI analysis complete"
+            })
+            
+            # Broadcast completion via WebSocket
+            await manager.send_update(analysis_id, {
+                "type": "analysis_complete",
+                "data": analysis_results[analysis_id]
             })
         
         # Clean up uploaded file
