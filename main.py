@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import os
@@ -61,15 +61,17 @@ manager = ConnectionManager()
 # Create FastAPI app
 app = FastAPI(title="Enhanced Discourse Analysis API", version="3.0.0")
 
-# CORS Configuration
-@app.middleware("http")
-async def cors_handler(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "false"
-    response.headers["Access-Control-Allow-Methods"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
+# CORS Configuration - Enhanced for WebSocket
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
+
+# Remove any @app.middleware decorators that might interfere
 
 @app.options("/{full_path:path}")
 async def options_handler(request: Request):
@@ -334,6 +336,57 @@ async def delete_analysis(analysis_id: str):
         return {"message": "Analysis deleted successfully"}
     
     raise HTTPException(status_code=404, detail="Analysis not found")
+
+# New SSE endpoint
+@app.get("/stream/{analysis_id}")
+async def stream_progress(analysis_id: str):
+    """
+    Server-Sent Events endpoint for real-time updates
+    """
+    async def event_generator():
+        last_sent_count = 0
+        max_wait = 300  # 5 minutes timeout
+        elapsed = 0
+        
+        while elapsed < max_wait:
+            if analysis_id in analysis_results:
+                result = analysis_results[analysis_id]
+                current_log_count = len(result.get('log_messages', []))
+                
+                # Send new log messages
+                if current_log_count > last_sent_count:
+                    new_logs = result.get('log_messages', [])[last_sent_count:]
+                    for log in new_logs:
+                        yield f"data: {json.dumps({'type': 'log', 'data': log})}\n\n"
+                    last_sent_count = current_log_count
+                
+                # Send status update
+                yield f"data: {json.dumps({'type': 'status', 'data': {'progress': result.get('progress', 0), 'message': result.get('message', ''), 'status': result.get('status', 'processing')}})}\n\n"
+                
+                # If completed, send final message and stop
+                if result.get('status') == 'completed':
+                    yield f"data: {json.dumps({'type': 'complete', 'data': result})}\n\n"
+                    break
+                elif result.get('status') == 'error':
+                    yield f"data: {json.dumps({'type': 'error', 'data': result})}\n\n"
+                    break
+            
+            await asyncio.sleep(1)
+            elapsed += 1
+        
+        # Timeout reached
+        yield f"data: {json.dumps({'type': 'timeout', 'data': {'message': 'Connection timeout'}})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.websocket("/ws/{analysis_id}")
 async def websocket_endpoint(websocket: WebSocket, analysis_id: str):
@@ -637,4 +690,10 @@ if __name__ == "__main__":
     import uvicorn
     import os
     port = int(os.environ.get("PORT", 8001))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        ws_ping_interval=20,  # Add WebSocket keep-alive
+        ws_ping_timeout=20
+    )
