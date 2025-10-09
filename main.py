@@ -403,22 +403,28 @@ async def stream_progress(analysis_id: str):
                         sent_something = True
                     last_sent_count = current_log_count
                 
-                # Send status update if progress changed OR timestamp changed
+                # Send status update if progress changed OR timestamp changed OR message changed
+                current_message = result.get('message', '')
+                last_message = result.get('last_message', '')
+                
                 if (current_progress != last_progress or 
-                    current_timestamp != last_update_timestamp):
+                    current_timestamp != last_update_timestamp or
+                    current_message != last_message):
                     status_data = json.dumps({
                         'type': 'status', 
                         'data': {
                             'progress': current_progress, 
-                            'message': result.get('message', ''), 
+                            'message': current_message, 
                             'status': current_status,
                             'timestamp': current_timestamp
                         }
                     })
                     yield f"data: {status_data}\n\n"
                     yield f": flush\n\n"
+                    yield f"id: {int(datetime.now().timestamp() * 1000)}\n\n"  # Force immediate delivery
                     last_progress = current_progress
                     last_update_timestamp = current_timestamp
+                    result['last_message'] = current_message  # Store last message
                     sent_something = True
                 
                 # Check for completion
@@ -437,9 +443,9 @@ async def stream_progress(analysis_id: str):
                 yield f": heartbeat {elapsed}\n\n"
                 heartbeat_counter = 0
             
-            # Shorter sleep for better responsiveness
-            await asyncio.sleep(0.2)
-            elapsed += 0.2
+            # Very short sleep for maximum responsiveness
+            await asyncio.sleep(0.1)
+            elapsed += 0.1
         
         # Timeout
         if elapsed >= max_wait:
@@ -492,14 +498,15 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
     Helper function to update analysis progress with throttled SSE broadcasting
     """
     if analysis_id in analysis_results:
-        # Throttle rapid progress updates (max 1 update per 100ms)
+        # Throttle rapid progress updates (max 1 update per 50ms for same progress)
         current_time = datetime.now()
         last_update_time = progress_update_times.get(analysis_id)
         
         if (last_update_time and 
-            (current_time - last_update_time).total_seconds() < 0.1 and
-            analysis_results[analysis_id].get("progress", 0) == progress):
-            # Skip this update if it's too soon and progress hasn't changed
+            (current_time - last_update_time).total_seconds() < 0.05 and
+            analysis_results[analysis_id].get("progress", 0) == progress and
+            analysis_results[analysis_id].get("message", "") == message):
+            # Skip this update if it's too soon and both progress and message are the same
             return
         
         progress_update_times[analysis_id] = current_time
