@@ -373,6 +373,7 @@ async def stream_progress(analysis_id: str):
         last_sent_count = 0
         last_progress = -1
         last_update_timestamp = None
+        last_update_counter = 0
         max_wait = 300
         elapsed = 0
         heartbeat_counter = 0
@@ -391,6 +392,7 @@ async def stream_progress(analysis_id: str):
                 current_progress = result.get('progress', 0)
                 current_status = result.get('status', 'processing')
                 current_timestamp = result.get('last_update')
+                current_counter = result.get('update_counter', 0)
                 
                 # Send new log messages immediately with padding
                 if current_log_count > last_sent_count:
@@ -403,13 +405,14 @@ async def stream_progress(analysis_id: str):
                         sent_something = True
                     last_sent_count = current_log_count
                 
-                # Send status update if progress changed OR timestamp changed OR message changed
+                # Send status update if ANY change detected
                 current_message = result.get('message', '')
                 last_message = result.get('last_message', '')
                 
                 if (current_progress != last_progress or 
                     current_timestamp != last_update_timestamp or
-                    current_message != last_message):
+                    current_message != last_message or
+                    current_counter != last_update_counter):
                     status_data = json.dumps({
                         'type': 'status', 
                         'data': {
@@ -424,6 +427,7 @@ async def stream_progress(analysis_id: str):
                     yield f"id: {int(datetime.now().timestamp() * 1000)}\n\n"  # Force immediate delivery
                     last_progress = current_progress
                     last_update_timestamp = current_timestamp
+                    last_update_counter = current_counter
                     result['last_message'] = current_message  # Store last message
                     sent_something = True
                 
@@ -443,9 +447,9 @@ async def stream_progress(analysis_id: str):
                 yield f": heartbeat {elapsed}\n\n"
                 heartbeat_counter = 0
             
-            # Very short sleep for maximum responsiveness
-            await asyncio.sleep(0.1)
-            elapsed += 0.1
+            # Ultra-short sleep for maximum responsiveness
+            await asyncio.sleep(0.05)
+            elapsed += 0.05
         
         # Timeout
         if elapsed >= max_wait:
@@ -498,15 +502,15 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
     Helper function to update analysis progress with throttled SSE broadcasting
     """
     if analysis_id in analysis_results:
-        # Throttle rapid progress updates (max 1 update per 50ms for same progress)
+        # Minimal throttling - only skip if EXACTLY the same update within 10ms
         current_time = datetime.now()
         last_update_time = progress_update_times.get(analysis_id)
         
         if (last_update_time and 
-            (current_time - last_update_time).total_seconds() < 0.05 and
+            (current_time - last_update_time).total_seconds() < 0.01 and
             analysis_results[analysis_id].get("progress", 0) == progress and
             analysis_results[analysis_id].get("message", "") == message):
-            # Skip this update if it's too soon and both progress and message are the same
+            # Skip only if it's the exact same update within 10ms
             return
         
         progress_update_times[analysis_id] = current_time
@@ -535,8 +539,12 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         
         print(f"✅ Progress: [{progress}%] {message}")
         
-        # Force immediate update by adding a timestamp to trigger SSE
+        # Force immediate update by adding a timestamp and counter to trigger SSE
         analysis_results[analysis_id]["last_update"] = current_time.isoformat()
+        analysis_results[analysis_id]["update_counter"] = analysis_results[analysis_id].get("update_counter", 0) + 1
+        
+        # Add a small delay to ensure the update is processed by SSE
+        await asyncio.sleep(0.001)
         
         # Broadcast update via WebSocket (for any WebSocket connections)
         await manager.send_update(analysis_id, {
