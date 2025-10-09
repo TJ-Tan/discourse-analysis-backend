@@ -48,6 +48,10 @@ class VideoAnalysisProcessor:
         increment = (end_progress - start_progress) / steps
         
         for i in range(steps):
+            # Check if stop was requested
+            if hasattr(self, 'should_stop') and self.should_stop:
+                raise Exception("Analysis stopped by user")
+                
             current_progress = int(start_progress + (increment * i))
             await self.progress_callback(
                 self.analysis_id, 

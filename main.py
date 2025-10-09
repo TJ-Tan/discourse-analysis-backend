@@ -101,6 +101,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Global storage for analysis results (in production, use a real database)
 analysis_results = {}
+# Global storage for running processes
+running_processes = {}
+# Job queue system
+job_queue = []
+MAX_CONCURRENT_JOBS = 1  # Railway can handle 1 job at a time
 
 # Configuration - Railway Optimized
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
@@ -228,14 +233,89 @@ async def reset_configuration():
 async def upload_video_options():
     return {"message": "OK"}
 
+def get_queue_status():
+    """
+    Get current queue status and estimated wait time
+    """
+    active_jobs = len([pid for pid in running_processes.keys() if analysis_results.get(pid, {}).get('status') == 'processing'])
+    queued_jobs = len(job_queue)
+    
+    # Estimate wait time based on current job progress
+    estimated_wait_minutes = 0
+    if active_jobs > 0:
+        # Find the currently running job
+        for analysis_id, result in analysis_results.items():
+            if result.get('status') == 'processing':
+                progress = result.get('progress', 0)
+                # Estimate remaining time based on progress
+                # Assume total processing time is 10-15 minutes for a typical video
+                estimated_total_minutes = 12
+                remaining_progress = 100 - progress
+                estimated_wait_minutes = (remaining_progress / 100) * estimated_total_minutes
+                break
+    
+    # Add time for queued jobs (assume 12 minutes per job)
+    estimated_wait_minutes += queued_jobs * 12
+    
+    return {
+        "active_jobs": active_jobs,
+        "queued_jobs": queued_jobs,
+        "estimated_wait_minutes": round(estimated_wait_minutes, 1),
+        "can_start_immediately": active_jobs < MAX_CONCURRENT_JOBS
+    }
+
+@app.get("/queue-status")
+async def queue_status():
+    """
+    Get current queue status and estimated wait time
+    """
+    return get_queue_status()
+
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     """
-    Upload a lecture video for enhanced AI-powered analysis
+    Upload a lecture video for enhanced AI-powered analysis with queue management
     """
     # Validate file type
     if not file.content_type.startswith('video/'):
         raise HTTPException(status_code=400, detail="File must be a video")
+    
+    # Check queue status
+    queue_status = get_queue_status()
+    
+    if not queue_status["can_start_immediately"]:
+        # Add to queue
+        analysis_id = str(uuid.uuid4())
+        job_queue.append({
+            "analysis_id": analysis_id,
+            "filename": file.filename,
+            "queued_at": datetime.now().isoformat(),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
+        })
+        
+        # Initialize analysis result as queued
+        analysis_results[analysis_id] = {
+            "status": "queued",
+            "progress": 0,
+            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
+            "log_messages": [{
+                "timestamp": datetime.now().isoformat(),
+                "message": f"📋 Video queued for processing. Position: {len(job_queue)} in queue",
+                "progress": 0
+            }],
+            "filename": file.filename,
+            "file_size": file.size,
+            "queued_at": datetime.now().isoformat(),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
+        }
+        
+        return {
+            "analysis_id": analysis_id,
+            "status": "queued",
+            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
+            "queue_position": len(job_queue),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
+        }
     
     # Check file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -345,6 +425,38 @@ async def get_analysis_status(analysis_id: str):
     
     return result
 
+@app.post("/stop-analysis/{analysis_id}")
+async def stop_analysis(analysis_id: str):
+    """
+    Stop a running analysis process
+    """
+    if analysis_id not in analysis_results:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    try:
+        # Mark analysis as stopped
+        analysis_results[analysis_id]["status"] = "stopped"
+        analysis_results[analysis_id]["message"] = "Analysis stopped by user"
+        
+        # Store the stop request timestamp
+        analysis_results[analysis_id]["stopped_at"] = datetime.now().isoformat()
+        
+        # If there's a running process, mark it for termination
+        if analysis_id in running_processes:
+            running_processes[analysis_id]["should_stop"] = True
+        
+        print(f"🛑 Analysis {analysis_id} marked for stopping")
+        
+        return {
+            "success": True,
+            "message": "Analysis stop request received",
+            "analysis_id": analysis_id
+        }
+        
+    except Exception as e:
+        print(f"❌ Error stopping analysis {analysis_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop analysis: {str(e)}")
+
 @app.delete("/analysis/{analysis_id}")
 async def delete_analysis(analysis_id: str):
     """
@@ -357,6 +469,10 @@ async def delete_analysis(analysis_id: str):
                 file_path.unlink()
             except Exception:
                 pass
+        
+        # Remove from running processes
+        if analysis_id in running_processes:
+            del running_processes[analysis_id]
         
         del analysis_results[analysis_id]
         return {"message": "Analysis deleted successfully"}
@@ -523,9 +639,13 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         if "log_messages" not in analysis_results[analysis_id]:
             analysis_results[analysis_id]["log_messages"] = []
         
-        # Add message to log history
+        # Add message to log history with Singapore time
+        import pytz
+        singapore_tz = pytz.timezone('Asia/Singapore')
+        singapore_time = current_time.astimezone(singapore_tz)
+        
         log_entry = {
-            "timestamp": current_time.isoformat(),
+            "timestamp": singapore_time.isoformat(),
             "message": message,
             "progress": progress
         }
@@ -565,8 +685,22 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     try:
         print(f"🚀 BACKGROUND TASK STARTED for {analysis_id}")
         
-        # Simple progress callback that updates state directly
+        # Register this process for potential stopping
+        running_processes[analysis_id] = {
+            "should_stop": False,
+            "started_at": datetime.now().isoformat()
+        }
+        
+        # Simple progress callback that updates state directly and checks for stop
         async def progress_callback(aid, progress, message, step_data=None):
+            # Check if stop was requested
+            if aid in running_processes and running_processes[aid]["should_stop"]:
+                print(f"🛑 Stop requested for {aid}, terminating process")
+                # Set stop flag on video processor
+                if hasattr(video_processor, 'should_stop'):
+                    video_processor.should_stop = True
+                raise Exception("Analysis stopped by user")
+            
             await update_progress(aid, progress, message, step_data)
         
         # Run the AI analysis with live progress updates
@@ -598,6 +732,13 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                 file_path.unlink()
         except Exception as e:
             print(f"Warning: Could not clean up file {file_path}: {e}")
+        
+        # Clean up running process
+        if analysis_id in running_processes:
+            del running_processes[analysis_id]
+        
+        # Process next job in queue
+        await process_next_queued_job()
             
     except Exception as e:
         print(f"Analysis failed for {analysis_id}: {str(e)}")
@@ -618,6 +759,42 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                 file_path.unlink()
         except Exception:
             pass
+        
+        # Clean up running process
+        if analysis_id in running_processes:
+            del running_processes[analysis_id]
+
+async def process_next_queued_job():
+    """
+    Process the next job in the queue if available
+    """
+    if job_queue and len(running_processes) < MAX_CONCURRENT_JOBS:
+        next_job = job_queue.pop(0)
+        analysis_id = next_job["analysis_id"]
+        
+        # Update status to processing
+        if analysis_id in analysis_results:
+            analysis_results[analysis_id]["status"] = "processing"
+            analysis_results[analysis_id]["message"] = "Starting analysis..."
+            analysis_results[analysis_id]["log_messages"].append({
+                "timestamp": datetime.now().isoformat(),
+                "message": "🚀 Starting analysis from queue",
+                "progress": 5
+            })
+            
+            # Find the uploaded file
+            file_path = None
+            for path in UPLOAD_DIR.glob(f"{analysis_id}_*"):
+                file_path = path
+                break
+            
+            if file_path and file_path.exists():
+                # Start processing
+                asyncio.create_task(process_video_with_enhanced_ai(analysis_id, file_path))
+            else:
+                # File not found, mark as error
+                analysis_results[analysis_id]["status"] = "error"
+                analysis_results[analysis_id]["message"] = "Uploaded file not found"
 
 async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
     """
