@@ -235,18 +235,21 @@ async def upload_video_options():
 
 def get_queue_status():
     """
-    Get current queue status and estimated wait time
+    Get current queue status and estimated wait time with concurrent user warnings
     """
     active_jobs = len([pid for pid in running_processes.keys() if analysis_results.get(pid, {}).get('status') == 'processing'])
     queued_jobs = len(job_queue)
     
     # Estimate wait time based on current job progress
     estimated_wait_minutes = 0
+    current_job_progress = 0
+    
     if active_jobs > 0:
         # Find the currently running job
         for analysis_id, result in analysis_results.items():
             if result.get('status') == 'processing':
                 progress = result.get('progress', 0)
+                current_job_progress = progress
                 # Estimate remaining time based on progress
                 # Assume total processing time is 10-15 minutes for a typical video
                 estimated_total_minutes = 12
@@ -257,11 +260,28 @@ def get_queue_status():
     # Add time for queued jobs (assume 12 minutes per job)
     estimated_wait_minutes += queued_jobs * 12
     
+    # Determine warning level
+    warning_level = "none"
+    warning_message = ""
+    
+    if active_jobs > 0 and current_job_progress < 50:
+        warning_level = "high"
+        warning_message = "⚠️ Another user is currently processing a video. Processing will be very slow. We recommend waiting and trying again later."
+    elif active_jobs > 0 and current_job_progress < 80:
+        warning_level = "medium"
+        warning_message = "⚠️ Another user is processing a video. Processing may be slower than usual."
+    elif queued_jobs > 0:
+        warning_level = "low"
+        warning_message = "ℹ️ There are videos in the queue. Processing may take longer than usual."
+    
     return {
         "active_jobs": active_jobs,
         "queued_jobs": queued_jobs,
         "estimated_wait_minutes": round(estimated_wait_minutes, 1),
-        "can_start_immediately": active_jobs < MAX_CONCURRENT_JOBS
+        "can_start_immediately": active_jobs < MAX_CONCURRENT_JOBS,
+        "warning_level": warning_level,
+        "warning_message": warning_message,
+        "current_job_progress": current_job_progress
     }
 
 @app.get("/queue-status")
@@ -282,6 +302,16 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
     
     # Check queue status
     queue_status = get_queue_status()
+    
+    # Show warning if there's concurrent processing
+    if queue_status["warning_level"] != "none":
+        return {
+            "warning": True,
+            "warning_level": queue_status["warning_level"],
+            "warning_message": queue_status["warning_message"],
+            "can_proceed": queue_status["warning_level"] != "high",
+            "queue_status": queue_status
+        }
     
     if not queue_status["can_start_immediately"]:
         # Add to queue

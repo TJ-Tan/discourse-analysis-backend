@@ -164,12 +164,12 @@ class VideoAnalysisProcessor:
 
             # Step 4.5: Analyze interaction and engagement
             logger.info("🤝 Step 4.5: Analyzing interaction and questioning techniques...")
-            await progress_callback(analysis_id, 85, "🤝 Step 4.5: Analyzing interaction and questioning techniques...")
+            await progress_callback(analysis_id, 90, "🤝 Step 4.5: Analyzing interaction and questioning techniques...")
             
             interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
             
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
-            await progress_callback(analysis_id, 88, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
+            await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             
             # Step 5: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 5: Calculating weighted component scores...")
