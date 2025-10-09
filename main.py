@@ -102,10 +102,16 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # Global storage for analysis results (in production, use a real database)
 analysis_results = {}
 
-# Configuration
+# Configuration - Railway Optimized
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 MAX_VIDEO_DURATION = 3600  # 1 hour in seconds
 ALLOWED_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
+
+# Railway-specific optimizations
+RAILWAY_MEMORY_LIMIT = 512 * 1024 * 1024  # 512MB Railway default
+AUDIO_CHUNK_SIZE_MB = 20  # Safe chunk size under 25MB Whisper limit
+MAX_AUDIO_CHUNKS = 12  # Max chunks for 1-hour video (10min chunks)
+PROCESSING_TIMEOUT = 1800  # 30 minutes total processing timeout
 
 @app.get("/")
 async def root():
@@ -125,18 +131,36 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Enhanced health check endpoint"""
+    """Enhanced health check endpoint with Railway optimizations"""
+    import psutil
+    
+    # Get memory usage
+    memory_info = psutil.virtual_memory()
+    memory_usage_mb = memory_info.used / (1024 * 1024)
+    memory_limit_mb = RAILWAY_MEMORY_LIMIT / (1024 * 1024)
+    
     return {
         "status": "healthy",
         "version": "3.0.0",
+        "railway_optimized": True,
         "ai_services": {
             "openai": "configured" if os.getenv('OPENAI_API_KEY') else "missing",
-            "ai_processor": "enhanced" if AI_AVAILABLE else "missing"
+            "ai_processor": "enhanced" if AI_AVAILABLE else "missing",
+            "chunking_enabled": True
         },
         "configuration": {
             "max_frames": ANALYSIS_CONFIG["sampling"]["max_frames_analyzed"] if AI_AVAILABLE else "N/A",
             "frame_interval": ANALYSIS_CONFIG["sampling"]["frame_interval_seconds"] if AI_AVAILABLE else "N/A",
-            "full_transcript": ANALYSIS_CONFIG["sampling"]["transcript_char_limit"] is None if AI_AVAILABLE else "N/A"
+            "full_transcript": ANALYSIS_CONFIG["sampling"]["transcript_char_limit"] is None if AI_AVAILABLE else "N/A",
+            "max_video_duration": f"{MAX_VIDEO_DURATION}s",
+            "audio_chunk_size": f"{AUDIO_CHUNK_SIZE_MB}MB",
+            "max_audio_chunks": MAX_AUDIO_CHUNKS
+        },
+        "system_resources": {
+            "memory_used_mb": round(memory_usage_mb, 1),
+            "memory_limit_mb": round(memory_limit_mb, 1),
+            "memory_usage_percent": round((memory_usage_mb / memory_limit_mb) * 100, 1),
+            "processing_timeout": f"{PROCESSING_TIMEOUT}s"
         }
     }
 

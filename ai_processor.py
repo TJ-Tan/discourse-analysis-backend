@@ -289,19 +289,313 @@ class VideoAnalysisProcessor:
         else:
             return f"{minutes:02d}:{secs:02d}"
     
+    async def transcribe_large_audio_file(self, audio_path: Path) -> Any:
+        """
+        Transcribe large audio files by splitting into chunks and processing separately
+        Optimized for Railway server environment with memory constraints
+        """
+        import librosa
+        import soundfile as sf
+        import tempfile
+        import os
+        
+        logger.info("🔧 Starting chunked audio processing...")
+        
+        # Load audio file
+        audio_data, sample_rate = librosa.load(str(audio_path), sr=16000, mono=True)
+        duration_seconds = len(audio_data) / sample_rate
+        
+        # Calculate optimal chunk parameters
+        # Target: 20MB chunks (safe buffer under 25MB limit)
+        # 16kHz mono WAV = 16,000 samples/sec * 2 bytes/sample = 32KB/sec
+        # 20MB = 20 * 1024 * 1024 bytes = 20,971,520 bytes
+        # 20MB / 32KB/sec = ~655 seconds = ~11 minutes
+        target_chunk_duration = 600  # 10 minutes for safety
+        overlap_duration = 30  # 30 seconds overlap
+        
+        chunk_samples = int(target_chunk_duration * sample_rate)
+        overlap_samples = int(overlap_duration * sample_rate)
+        
+        logger.info(f"📊 Audio duration: {duration_seconds:.1f}s, chunking into ~{target_chunk_duration}s segments")
+        
+        # Process chunks
+        all_transcripts = []
+        all_words = []
+        chunk_count = 0
+        
+        for start_sample in range(0, len(audio_data), chunk_samples - overlap_samples):
+            chunk_count += 1
+            end_sample = min(start_sample + chunk_samples, len(audio_data))
+            
+            # Extract chunk
+            chunk_audio = audio_data[start_sample:end_sample]
+            chunk_start_time = start_sample / sample_rate
+            
+            logger.info(f"📦 Processing chunk {chunk_count} ({chunk_start_time:.1f}s - {end_sample/sample_rate:.1f}s)")
+            await self.progress_callback(
+                self.analysis_id, 
+                33 + int((chunk_count * 5) / max(1, (len(audio_data) // (chunk_samples - overlap_samples)))), 
+                f"📦 Processing chunk {chunk_count}..."
+            )
+            
+            # Save chunk to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                sf.write(temp_file.name, chunk_audio, sample_rate)
+                temp_path = temp_file.name
+            
+            try:
+                # Transcribe chunk
+                with open(temp_path, "rb") as chunk_file:
+                    chunk_response = openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=chunk_file,
+                        response_format="verbose_json",
+                        timestamp_granularities=["word"]
+                    )
+                
+                # Adjust timestamps to global time
+                chunk_text = chunk_response.text
+                chunk_words = getattr(chunk_response, 'words', [])
+                
+                # Adjust word timestamps to global timeline
+                for word_data in chunk_words:
+                    word_data['start'] += chunk_start_time
+                    word_data['end'] += chunk_start_time
+                
+                all_transcripts.append(chunk_text)
+                all_words.extend(chunk_words)
+                
+                logger.info(f"✅ Chunk {chunk_count} transcribed: {len(chunk_text)} chars")
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing chunk {chunk_count}: {e}")
+                # Continue with other chunks
+                continue
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+        
+        # Combine all transcripts
+        combined_transcript = " ".join(all_transcripts)
+        
+        # Create a mock response object with combined data
+        class CombinedResponse:
+            def __init__(self, text, words):
+                self.text = text
+                self.words = words
+        
+        logger.info(f"✅ Chunked processing complete: {len(combined_transcript)} chars from {chunk_count} chunks")
+        return CombinedResponse(combined_transcript, all_words)
+    
+    async def transcribe_large_audio_file_streaming(self, audio_path: Path) -> Any:
+        """
+        Memory-efficient streaming approach using FFmpeg to split audio
+        Better for Railway's memory constraints with comprehensive error handling
+        """
+        import subprocess
+        import tempfile
+        import os
+        import gc
+        
+        logger.info("🔧 Starting streaming chunked audio processing...")
+        
+        # Railway-specific optimizations
+        max_chunks = 12  # Limit chunks for 1-hour max duration (10min chunks)
+        max_retries = 3
+        chunk_timeout = 300  # 5 minutes per chunk timeout
+        
+        # Get audio duration using FFprobe
+        duration_cmd = [
+            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            '-of', 'csv=p=0', str(audio_path)
+        ]
+        
+        try:
+            duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True, timeout=30)
+            duration_seconds = float(duration_result.stdout.strip())
+            
+            # Validate duration for Railway constraints
+            if duration_seconds > 3600:  # 1 hour limit
+                raise ValueError(f"Audio duration ({duration_seconds:.1f}s) exceeds 1-hour limit")
+                
+        except subprocess.TimeoutExpired:
+            logger.error("❌ FFprobe timeout - audio file may be corrupted")
+            raise Exception("Audio file analysis timeout")
+        except Exception as e:
+            logger.error(f"❌ Could not get audio duration: {e}")
+            # Fallback to librosa method
+            return await self.transcribe_large_audio_file(audio_path)
+        
+        # Calculate chunk parameters
+        target_chunk_duration = 600  # 10 minutes
+        overlap_duration = 30  # 30 seconds
+        
+        all_transcripts = []
+        all_words = []
+        chunk_count = 0
+        
+        # Calculate total expected chunks
+        total_expected_chunks = min(max_chunks, int(duration_seconds / (target_chunk_duration - overlap_duration)) + 1)
+        
+        for start_time in range(0, int(duration_seconds), target_chunk_duration - overlap_duration):
+            if chunk_count >= max_chunks:
+                logger.warning(f"⚠️ Reached maximum chunk limit ({max_chunks}), stopping processing")
+                break
+                
+            chunk_count += 1
+            end_time = min(start_time + target_chunk_duration, duration_seconds)
+            
+            logger.info(f"📦 Processing chunk {chunk_count}/{total_expected_chunks} ({start_time}s - {end_time}s)")
+            await self.progress_callback(
+                self.analysis_id, 
+                33 + int((chunk_count * 5) / total_expected_chunks), 
+                f"📦 Processing chunk {chunk_count}/{total_expected_chunks}..."
+            )
+            
+            # Create temporary file for chunk
+            temp_path = None
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                        temp_path = temp_file.name
+                    
+                    # Extract chunk using FFmpeg with timeout
+                    chunk_cmd = [
+                        'ffmpeg', '-i', str(audio_path),
+                        '-ss', str(start_time),
+                        '-t', str(end_time - start_time),
+                        '-acodec', 'pcm_s16le',
+                        '-ar', '16000',
+                        '-ac', '1',
+                        temp_path,
+                        '-y'
+                    ]
+                    
+                    subprocess.run(chunk_cmd, capture_output=True, check=True, timeout=chunk_timeout)
+                    
+                    # Check chunk file size
+                    chunk_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+                    if chunk_size_mb > 25:
+                        logger.warning(f"⚠️ Chunk {chunk_count} is {chunk_size_mb:.1f}MB, may exceed API limit")
+                    
+                    # Transcribe chunk with retry logic
+                    chunk_success = False
+                    for api_retry in range(max_retries):
+                        try:
+                            with open(temp_path, "rb") as chunk_file:
+                                chunk_response = openai_client.audio.transcriptions.create(
+                                    model="whisper-1",
+                                    file=chunk_file,
+                                    response_format="verbose_json",
+                                    timestamp_granularities=["word"]
+                                )
+                            
+                            # Adjust timestamps to global time
+                            chunk_text = chunk_response.text
+                            chunk_words = getattr(chunk_response, 'words', [])
+                            
+                            for word_data in chunk_words:
+                                word_data['start'] += start_time
+                                word_data['end'] += start_time
+                            
+                            all_transcripts.append(chunk_text)
+                            all_words.extend(chunk_words)
+                            
+                            logger.info(f"✅ Chunk {chunk_count} transcribed: {len(chunk_text)} chars")
+                            chunk_success = True
+                            break
+                            
+                        except Exception as api_error:
+                            logger.warning(f"⚠️ API error for chunk {chunk_count}, retry {api_retry + 1}: {api_error}")
+                            if api_retry < max_retries - 1:
+                                await asyncio.sleep(2 ** api_retry)  # Exponential backoff
+                    
+                    if chunk_success:
+                        break
+                    else:
+                        raise Exception("All API retries failed")
+                        
+                except subprocess.TimeoutExpired:
+                    logger.error(f"❌ FFmpeg timeout for chunk {chunk_count}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        await asyncio.sleep(2)
+                        continue
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"❌ FFmpeg error processing chunk {chunk_count}: {e}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        await asyncio.sleep(2)
+                        continue
+                except Exception as e:
+                    logger.error(f"❌ Error processing chunk {chunk_count}: {e}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        await asyncio.sleep(2)
+                        continue
+                finally:
+                    # Clean up temporary file
+                    if temp_path and os.path.exists(temp_path):
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
+                    
+                    # Force garbage collection for Railway memory management
+                    gc.collect()
+            
+            if retry_count >= max_retries:
+                logger.error(f"❌ Failed to process chunk {chunk_count} after {max_retries} retries")
+                continue
+        
+        # Combine all transcripts
+        combined_transcript = " ".join(all_transcripts)
+        
+        # Create a mock response object with combined data
+        class CombinedResponse:
+            def __init__(self, text, words):
+                self.text = text
+                self.words = words
+        
+        logger.info(f"✅ Streaming chunked processing complete: {len(combined_transcript)} chars from {chunk_count} chunks")
+        return CombinedResponse(combined_transcript, all_words)
+    
     async def analyze_speech_enhanced(self, audio_path: Path) -> Dict[str, Any]:
-        """Enhanced speech analysis using full transcript and expanded metrics"""
+        """Enhanced speech analysis using chunked Whisper transcription for large files"""
         logger.info("🎤 Starting enhanced Whisper transcription...")
         await self.progress_callback(self.analysis_id, 30, "🎤 Starting enhanced Whisper transcription...")
         
-        # Transcribe audio using Whisper
-        with open(audio_path, "rb") as audio_file:
-            transcript_response = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="verbose_json",
-                timestamp_granularities=["word"]
-            )
+        # Check file size and determine if chunking is needed
+        file_size_mb = audio_path.stat().st_size / (1024 * 1024)
+        logger.info(f"📊 Audio file size: {file_size_mb:.1f}MB")
+        
+        if file_size_mb > 20:  # Use 20MB threshold for safety
+            logger.info("📦 Large audio file detected, using chunked processing...")
+            await self.progress_callback(self.analysis_id, 32, f"📦 Large audio file ({file_size_mb:.1f}MB), processing in chunks...")
+            
+            # Use streaming approach for better memory efficiency on Railway
+            try:
+                transcript_response = await self.transcribe_large_audio_file_streaming(audio_path)
+            except Exception as e:
+                logger.warning(f"⚠️ Streaming approach failed: {e}, falling back to librosa method")
+                transcript_response = await self.transcribe_large_audio_file(audio_path)
+        else:
+            logger.info("📄 Small audio file, processing directly...")
+            await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly...")
+            
+            # Process directly
+            with open(audio_path, "rb") as audio_file:
+                transcript_response = openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="verbose_json",
+                    timestamp_granularities=["word"]
+                )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
         
