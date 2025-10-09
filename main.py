@@ -293,19 +293,23 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         })
         
-        # Initialize analysis result as queued
+        # Initialize analysis result as queued with Singapore time
+        import pytz
+        singapore_tz = pytz.timezone('Asia/Singapore')
+        singapore_time = datetime.now().astimezone(singapore_tz)
+        
         analysis_results[analysis_id] = {
             "status": "queued",
             "progress": 0,
             "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
             "log_messages": [{
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": singapore_time.isoformat(),
                 "message": f"📋 Video queued for processing. Position: {len(job_queue)} in queue",
                 "progress": 0
             }],
             "filename": file.filename,
             "file_size": file.size,
-            "queued_at": datetime.now().isoformat(),
+            "queued_at": singapore_time.isoformat(),
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         }
         
@@ -351,12 +355,17 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
         current_config = get_configurable_parameters() if AI_AVAILABLE else {}
         
         # Initialize analysis status with enhanced info
+        # Initialize analysis result with Singapore time
+        import pytz
+        singapore_tz = pytz.timezone('Asia/Singapore')
+        singapore_time = datetime.now().astimezone(singapore_tz)
+        
         analysis_results[analysis_id] = {
             "status": "processing",
             "progress": 5,
             "message": "File uploaded successfully. Starting enhanced AI analysis...",
             "log_messages": [{
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": singapore_time.isoformat(),
                 "message": "📤 File uploaded successfully. Preparing analysis...",
                 "progress": 5
             }],
