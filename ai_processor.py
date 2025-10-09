@@ -54,7 +54,7 @@ class VideoAnalysisProcessor:
                 current_progress, 
                 f"{message} ({current_progress}%)"
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)  # Reduced sleep for more responsive updates
         
     async def process_video(self, video_path: Path, analysis_id: str, progress_callback):
         """

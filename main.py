@@ -372,6 +372,7 @@ async def stream_progress(analysis_id: str):
     async def event_generator():
         last_sent_count = 0
         last_progress = -1
+        last_update_timestamp = None
         max_wait = 300
         elapsed = 0
         heartbeat_counter = 0
@@ -389,6 +390,7 @@ async def stream_progress(analysis_id: str):
                 current_log_count = len(result.get('log_messages', []))
                 current_progress = result.get('progress', 0)
                 current_status = result.get('status', 'processing')
+                current_timestamp = result.get('last_update')
                 
                 # Send new log messages immediately with padding
                 if current_log_count > last_sent_count:
@@ -401,19 +403,22 @@ async def stream_progress(analysis_id: str):
                         sent_something = True
                     last_sent_count = current_log_count
                 
-                # Send status update if progress changed
-                if current_progress != last_progress:
+                # Send status update if progress changed OR timestamp changed
+                if (current_progress != last_progress or 
+                    current_timestamp != last_update_timestamp):
                     status_data = json.dumps({
                         'type': 'status', 
                         'data': {
                             'progress': current_progress, 
                             'message': result.get('message', ''), 
-                            'status': current_status
+                            'status': current_status,
+                            'timestamp': current_timestamp
                         }
                     })
                     yield f"data: {status_data}\n\n"
                     yield f": flush\n\n"
                     last_progress = current_progress
+                    last_update_timestamp = current_timestamp
                     sent_something = True
                 
                 # Check for completion
@@ -426,15 +431,15 @@ async def stream_progress(analysis_id: str):
                     yield f"data: {error_data}\n\n"
                     break
             
-            # Send heartbeat every 3 iterations (0.9 seconds) to prevent buffering
+            # Send heartbeat every 2 iterations (0.6 seconds) to prevent buffering
             heartbeat_counter += 1
-            if heartbeat_counter >= 3:
+            if heartbeat_counter >= 2:
                 yield f": heartbeat {elapsed}\n\n"
                 heartbeat_counter = 0
             
-            # Very short sleep for responsiveness
-            await asyncio.sleep(0.3)
-            elapsed += 0.3
+            # Shorter sleep for better responsiveness
+            await asyncio.sleep(0.2)
+            elapsed += 0.2
         
         # Timeout
         if elapsed >= max_wait:
@@ -479,11 +484,27 @@ async def websocket_endpoint(websocket: WebSocket, analysis_id: str):
         print(f"WebSocket error: {e}")
         manager.disconnect(websocket, analysis_id)
 
+# Global throttling for progress updates
+progress_update_times = {}
+
 async def update_progress(analysis_id: str, progress: int, message: str, details: dict = None):
     """
-    Helper function to update analysis progress with WebSocket broadcasting
+    Helper function to update analysis progress with throttled SSE broadcasting
     """
     if analysis_id in analysis_results:
+        # Throttle rapid progress updates (max 1 update per 100ms)
+        current_time = datetime.now()
+        last_update_time = progress_update_times.get(analysis_id)
+        
+        if (last_update_time and 
+            (current_time - last_update_time).total_seconds() < 0.1 and
+            analysis_results[analysis_id].get("progress", 0) == progress):
+            # Skip this update if it's too soon and progress hasn't changed
+            return
+        
+        progress_update_times[analysis_id] = current_time
+        
+        # Update the main progress
         analysis_results[analysis_id]["progress"] = progress
         analysis_results[analysis_id]["message"] = message
         
@@ -493,7 +514,7 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         
         # Add message to log history
         log_entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": current_time.isoformat(),
             "message": message,
             "progress": progress
         }
@@ -507,14 +528,18 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         
         print(f"✅ Progress: [{progress}%] {message}")
         
-        # Broadcast update via WebSocket
+        # Force immediate update by adding a timestamp to trigger SSE
+        analysis_results[analysis_id]["last_update"] = current_time.isoformat()
+        
+        # Broadcast update via WebSocket (for any WebSocket connections)
         await manager.send_update(analysis_id, {
             "type": "progress_update",
             "data": {
                 "progress": progress,
                 "message": message,
                 "log_entry": log_entry,
-                "status": analysis_results[analysis_id]["status"]
+                "status": analysis_results[analysis_id]["status"],
+                "timestamp": analysis_results[analysis_id]["last_update"]
             }
         })
 
