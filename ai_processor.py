@@ -354,7 +354,8 @@ class VideoAnalysisProcessor:
                         model="whisper-1",
                         file=chunk_file,
                         response_format="verbose_json",
-                        timestamp_granularities=["word"]
+                        timestamp_granularities=["word"],
+                        language="en"  # Force English transcription
                     )
                 
                 # Adjust timestamps to global time
@@ -496,7 +497,8 @@ class VideoAnalysisProcessor:
                                     model="whisper-1",
                                     file=chunk_file,
                                     response_format="verbose_json",
-                                    timestamp_granularities=["word"]
+                                    timestamp_granularities=["word"],
+                                    language="en"  # Force English transcription
                                 )
                             
                             # Adjust timestamps to global time
@@ -572,7 +574,7 @@ class VideoAnalysisProcessor:
     async def analyze_speech_enhanced(self, audio_path: Path) -> Dict[str, Any]:
         """Enhanced speech analysis using chunked Whisper transcription for large files"""
         logger.info("🎤 Starting enhanced Whisper transcription...")
-        await self.progress_callback(self.analysis_id, 30, "🎤 Starting enhanced Whisper transcription...")
+        await self.progress_callback(self.analysis_id, 30, "🎤 Starting enhanced Whisper transcription (English)...")
         
         # Check file size and determine if chunking is needed
         file_size_mb = audio_path.stat().st_size / (1024 * 1024)
@@ -590,15 +592,16 @@ class VideoAnalysisProcessor:
                 transcript_response = await self.transcribe_large_audio_file(audio_path)
         else:
             logger.info("📄 Small audio file, processing directly...")
-            await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly...")
+            await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly (English)...")
             
-            # Process directly
+            # Process directly with English language enforcement
             with open(audio_path, "rb") as audio_file:
                 transcript_response = openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     response_format="verbose_json",
-                    timestamp_granularities=["word"]
+                    timestamp_granularities=["word"],
+                    language="en"  # Force English transcription
                 )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
@@ -606,6 +609,11 @@ class VideoAnalysisProcessor:
         logger.info("✅ Whisper transcription complete")
         transcript_text = transcript_response.text
         logger.info(f"📝 Full transcript length: {len(transcript_text)} characters")
+        
+        # Log first 200 characters for debugging
+        preview = transcript_text[:200] + "..." if len(transcript_text) > 200 else transcript_text
+        logger.info(f"📄 Transcript preview: {preview}")
+        
         await self.progress_callback(self.analysis_id, 42, f"📝 Full transcript length: {len(transcript_text)} characters")
         
         # Enhanced speech metrics calculation
@@ -1185,23 +1193,69 @@ class VideoAnalysisProcessor:
                 'total_interactions': 0
             }
         
-    async def generate_comprehensive_summary(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, overall_score: float) -> Dict[str, Any]:
+    def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
+        """
+        Extract 1-2 relevant quotes from transcript to support assessment
+        """
+        if not transcript or len(transcript.strip()) < 50:
+            return []
+        
+        # Split transcript into sentences
+        sentences = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip() and len(s.strip()) > 20]
+        
+        if len(sentences) < 2:
+            return [transcript[:200] + "..." if len(transcript) > 200 else transcript]
+        
+        # Look for sentences that might indicate good teaching practices
+        evidence_indicators = [
+            'example', 'for instance', 'let me explain', 'in other words',
+            'first', 'second', 'next', 'finally', 'therefore', 'as a result',
+            'important', 'key', 'main', 'primary', 'essential', 'crucial',
+            'understand', 'remember', 'note', 'consider', 'think about'
+        ]
+        
+        evidence_sentences = []
+        
+        # Find sentences with evidence indicators
+        for sentence in sentences:
+            if any(indicator in sentence.lower() for indicator in evidence_indicators):
+                if len(sentence) > 30 and len(sentence) < 150:  # Good length for evidence
+                    evidence_sentences.append(sentence)
+                    if len(evidence_sentences) >= 2:
+                        break
+        
+        # If we don't have enough evidence sentences, pick the first two meaningful sentences
+        if len(evidence_sentences) < 2:
+            for sentence in sentences:
+                if len(sentence) > 30 and len(sentence) < 150:
+                    evidence_sentences.append(sentence)
+                    if len(evidence_sentences) >= 2:
+                        break
+        
+        return evidence_sentences[:2]  # Return max 2 pieces of evidence
+        
+    async def generate_comprehensive_summary(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, overall_score: float, transcript_text: str = "") -> Dict[str, Any]:
         """
         Generate comprehensive evidence-based summary
         """
-        transcript = speech_analysis.get('transcript', '')
+        transcript = speech_analysis.get('transcript', transcript_text)
+        
+        # Extract evidence from transcript
+        evidence_quotes = self.extract_evidence_from_transcript(transcript)
         
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert educational evaluator. Create a comprehensive summary that:
+                    "content": f"""You are an expert educational evaluator. Create a comprehensive summary that:
                     1. Reviews teaching content quality and accuracy
                     2. Evaluates presentation effectiveness
                     3. Assesses cognitive skill development
-                    4. Provides specific evidence from the transcript (1-3 key quotes with context)
+                    4. Uses the provided evidence from transcript to support assessment
                     5. Gives actionable, specific recommendations
+                    
+                    Evidence from transcript to use in your assessment: {evidence_quotes}
                     
                     Be specific, evidence-based, and constructive."""
                 },
@@ -1247,7 +1301,7 @@ class VideoAnalysisProcessor:
                     'Add visual aids to support complex concepts',
                     'Include regular comprehension checks'
                 ],
-                'overall_summary': f'This lecture achieved an overall score of {overall_score}/10, demonstrating solid teaching fundamentals with opportunities for enhancement in student interaction and engagement techniques.'
+                'overall_summary': f'This lecture achieved an overall score of {round(overall_score, 1)}/10, demonstrating solid teaching fundamentals with opportunities for enhancement in student interaction and engagement techniques.'
             }
     
     async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict) -> Dict[str, Any]:
@@ -1472,7 +1526,7 @@ class VideoAnalysisProcessor:
         
         # Generate Comprehensive Summary AFTER building the result dict
         comprehensive_summary = await self.generate_comprehensive_summary(
-            speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, overall_score
+            speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, overall_score, speech_analysis.get('transcript', '')
         )
         
         result['comprehensive_summary'] = comprehensive_summary
