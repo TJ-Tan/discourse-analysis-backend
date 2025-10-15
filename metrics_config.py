@@ -32,12 +32,12 @@ ANALYSIS_CONFIG = {
     },
     
     "weights": {
-        # Overall category weights
-        "speech_analysis": 0.30,
-        "body_language": 0.25, 
-        "teaching_effectiveness": 0.35,
+        # Overall category weights - All set to 20% (0.20) for equal weighting
+        "speech_analysis": 0.20,
+        "body_language": 0.20, 
+        "teaching_effectiveness": 0.20,
         "interaction_engagement": 0.20, 
-        "presentation_skills": 0.10,
+        "presentation_skills": 0.20,
         
         # Speech analysis sub-components
         "speech_components": {

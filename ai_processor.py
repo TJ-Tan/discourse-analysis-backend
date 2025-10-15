@@ -1473,8 +1473,8 @@ class VideoAnalysisProcessor:
                     }
                 },
                 'final_calculation': {
-                    'formula': '(Speech × 0.25) + (Body × 0.20) + (Teaching × 0.25) + (Interaction × 0.20) + (Presentation × 0.10)',
-                    'calculation': f"({round(speech_score, 1)} × 0.25) + ({round(visual_score, 1)} × 0.20) + ({round(pedagogy_score, 1)} × 0.25) + ({round(interaction_score, 1)} × 0.20) + ({round(presentation_score, 1)} × 0.10)",
+                    'formula': f'(Speech × {category_weights["speech_analysis"]:.2f}) + (Body × {category_weights["body_language"]:.2f}) + (Teaching × {category_weights["teaching_effectiveness"]:.2f}) + (Interaction × {category_weights["interaction_engagement"]:.2f}) + (Presentation × {category_weights["presentation_skills"]:.2f})',
+                    'calculation': f"({round(speech_score, 1)} × {category_weights['speech_analysis']:.2f}) + ({round(visual_score, 1)} × {category_weights['body_language']:.2f}) + ({round(pedagogy_score, 1)} × {category_weights['teaching_effectiveness']:.2f}) + ({round(interaction_score, 1)} × {category_weights['interaction_engagement']:.2f}) + ({round(presentation_score, 1)} × {category_weights['presentation_skills']:.2f})",
                     'result': round(overall_score, 1)
                 },
                 'speech_breakdown': {

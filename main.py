@@ -121,8 +121,10 @@ PROCESSING_TIMEOUT = 1800  # 30 minutes total processing timeout
 @app.get("/")
 async def root():
     return {
-        "message": "Enhanced AI-Powered Discourse Analysis API is running!", 
+        "message": "MARS - Multimodal AI Reflection System API is running!", 
         "version": "3.0.0",
+        "app_name": "MARS",
+        "full_name": "Multimodal AI Reflection System",
         "features": [
             "Enhanced frame sampling (up to 40 frames)",
             "Full transcript analysis",
@@ -1000,10 +1002,11 @@ def create_enhanced_mock_results() -> Dict[str, Any]:
             "transcript_length": 15247,
             "filler_words_detected": 8,
             "category_weights": {
-                "speech_analysis": 30,
-                "body_language": 25,
-                "teaching_effectiveness": 35,
-                "presentation_skills": 10
+                "speech_analysis": 20,
+                "body_language": 20,
+                "teaching_effectiveness": 20,
+                "interaction_engagement": 20,
+                "presentation_skills": 20
             }
         }
     }
