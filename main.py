@@ -293,15 +293,7 @@ async def queue_status():
     """
     Get current queue status and estimated wait time
     """
-    status = get_queue_status()
-    return JSONResponse(
-        content=status,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
+    return get_queue_status()
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
