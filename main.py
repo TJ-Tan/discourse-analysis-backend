@@ -293,7 +293,13 @@ async def queue_status():
     """
     Get current queue status and estimated wait time
     """
-    return get_queue_status()
+    status = get_queue_status()
+    # Add explicit CORS headers as backup
+    response = JSONResponse(content=status)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
