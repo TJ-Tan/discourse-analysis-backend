@@ -62,26 +62,28 @@ manager = ConnectionManager()
 # Create FastAPI app
 app = FastAPI(title="Enhanced Discourse Analysis API", version="3.0.0")
 
-# CORS Configuration - Enhanced for WebSocket
+# CORS Configuration - Enhanced for all origins
+# Note: allow_credentials must be False when allow_origins=["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_credentials=False,  # Must be False when using wildcard origins
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
     allow_headers=["*"],
-    expose_headers=["*"]
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight for 1 hour
 )
 
-# Remove any @app.middleware decorators that might interfere
-
+# Global OPTIONS handler for preflight requests
 @app.options("/{full_path:path}")
 async def options_handler(request: Request):
     return JSONResponse(
         content="OK",
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
             "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
         }
     )
 
@@ -291,7 +293,15 @@ async def queue_status():
     """
     Get current queue status and estimated wait time
     """
-    return get_queue_status()
+    status = get_queue_status()
+    return JSONResponse(
+        content=status,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
