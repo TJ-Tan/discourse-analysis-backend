@@ -269,37 +269,69 @@ class VideoAnalysisProcessor:
     def extract_timecoded_transcript(self, words_data: List[Dict]) -> List[Dict]:
         """
         Extract transcript with word-level timecodes
+        Groups words into 100-120 character segments with timestamps
         Ensures sentences start with capital letters
         """
         timecoded_transcript = []
-        previous_timestamp = None
         is_new_sentence = True
+        current_segment = []
+        current_segment_length = 0
+        segment_start_time = None
         
         for word_data in words_data:
             word = word_data.get('word', '')
-            current_timestamp = self.format_timestamp(word_data.get('start', 0))
-            
-            # If timestamp changed, it's likely a new sentence/segment
-            if previous_timestamp and current_timestamp != previous_timestamp:
-                is_new_sentence = True
+            word_start = word_data.get('start', 0)
             
             # Capitalize first letter of word if it's the start of a new sentence
             if is_new_sentence and word:
                 word = word[0].upper() + word[1:] if len(word) > 1 else word.upper()
                 is_new_sentence = False
+                # Set segment start time for new sentence
+                if segment_start_time is None:
+                    segment_start_time = word_start
             
             # Check if this word ends a sentence (period, exclamation, question mark)
             if word and word[-1] in ['.', '!', '?']:
                 is_new_sentence = True
             
-            timecoded_transcript.append({
-                'word': word,
-                'start': round(word_data.get('start', 0), 2),
-                'end': round(word_data.get('end', 0), 2),
-                'timestamp': current_timestamp
-            })
+            # Calculate word length (including space before it)
+            word_length = len(word) + (1 if current_segment_length > 0 else 0)  # Add space if not first word
             
-            previous_timestamp = current_timestamp
+            # If adding this word would exceed 120 characters, finalize current segment
+            if current_segment_length + word_length > 120 and current_segment_length >= 100:
+                # Assign timestamp to all words in current segment
+                segment_timestamp = self.format_timestamp(segment_start_time)
+                for segment_word_data in current_segment:
+                    timecoded_transcript.append({
+                        'word': segment_word_data['word'],
+                        'start': round(segment_word_data['start'], 2),
+                        'end': round(segment_word_data['end'], 2),
+                        'timestamp': segment_timestamp
+                    })
+                
+                # Start new segment
+                current_segment = []
+                current_segment_length = 0
+                segment_start_time = word_start
+            
+            # Add word to current segment
+            current_segment.append({
+                'word': word,
+                'start': word_start,
+                'end': word_data.get('end', 0)
+            })
+            current_segment_length += word_length
+        
+        # Add remaining words in final segment
+        if current_segment:
+            segment_timestamp = self.format_timestamp(segment_start_time) if segment_start_time is not None else self.format_timestamp(0)
+            for segment_word_data in current_segment:
+                timecoded_transcript.append({
+                    'word': segment_word_data['word'],
+                    'start': round(segment_word_data['start'], 2),
+                    'end': round(segment_word_data['end'], 2),
+                    'timestamp': segment_timestamp
+                })
         
         return timecoded_transcript
     
