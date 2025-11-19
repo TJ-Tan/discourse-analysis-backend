@@ -269,16 +269,37 @@ class VideoAnalysisProcessor:
     def extract_timecoded_transcript(self, words_data: List[Dict]) -> List[Dict]:
         """
         Extract transcript with word-level timecodes
+        Ensures sentences start with capital letters
         """
         timecoded_transcript = []
+        previous_timestamp = None
+        is_new_sentence = True
         
         for word_data in words_data:
+            word = word_data.get('word', '')
+            current_timestamp = self.format_timestamp(word_data.get('start', 0))
+            
+            # If timestamp changed, it's likely a new sentence/segment
+            if previous_timestamp and current_timestamp != previous_timestamp:
+                is_new_sentence = True
+            
+            # Capitalize first letter of word if it's the start of a new sentence
+            if is_new_sentence and word:
+                word = word[0].upper() + word[1:] if len(word) > 1 else word.upper()
+                is_new_sentence = False
+            
+            # Check if this word ends a sentence (period, exclamation, question mark)
+            if word and word[-1] in ['.', '!', '?']:
+                is_new_sentence = True
+            
             timecoded_transcript.append({
-                'word': word_data.get('word', ''),
+                'word': word,
                 'start': round(word_data.get('start', 0), 2),
                 'end': round(word_data.get('end', 0), 2),
-                'timestamp': self.format_timestamp(word_data.get('start', 0))
+                'timestamp': current_timestamp
             })
+            
+            previous_timestamp = current_timestamp
         
         return timecoded_transcript
     
