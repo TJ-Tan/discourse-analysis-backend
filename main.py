@@ -138,6 +138,89 @@ async def root():
         ]
     }
 
+@app.get("/deployment-info")
+async def deployment_info():
+    """
+    Get deployment information including last deployment time
+    """
+    import pytz
+    from pathlib import Path
+    import subprocess
+    
+    deployment_time = None
+    
+    # Try to get from environment variable (set during deployment)
+    if os.getenv("DEPLOYMENT_TIME"):
+        deployment_time = os.getenv("DEPLOYMENT_TIME")
+    else:
+        # Try to get from git commit time (most accurate)
+        try:
+            result = subprocess.run(
+                ['git', 'log', '-1', '--format=%ci', 'HEAD'],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                cwd=Path(__file__).parent
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Git format: 2024-11-19 14:30:45 +0800
+                git_time_str = result.stdout.strip()
+                deployment_time = git_time_str
+        except:
+            pass
+        
+        # Fallback: use main.py modification time as proxy for deployment
+        if not deployment_time:
+            try:
+                main_file = Path(__file__)
+                if main_file.exists():
+                    mtime = main_file.stat().st_mtime
+                    deployment_time = datetime.fromtimestamp(mtime, tz=pytz.UTC).isoformat()
+            except:
+                pass
+    
+    # If still no time, use current time
+    if not deployment_time:
+        deployment_time = datetime.now(pytz.UTC).isoformat()
+    
+    # Convert to Singapore time
+    singapore_tz = pytz.timezone('Asia/Singapore')
+    
+    # Parse deployment time
+    if isinstance(deployment_time, str):
+        # Try parsing git format first (2024-11-19 14:30:45 +0800)
+        if ' ' in deployment_time and '+' in deployment_time or '-' in deployment_time[-6:]:
+            try:
+                # Git format: "2024-11-19 14:30:45 +0800"
+                parts = deployment_time.split()
+                if len(parts) >= 3:
+                    date_part = parts[0]
+                    time_part = parts[1]
+                    tz_offset = parts[2]
+                    dt_str = f"{date_part}T{time_part}{tz_offset[:3]}:{tz_offset[3:]}"
+                    dt = datetime.fromisoformat(dt_str)
+                    # Convert to UTC first, then to Singapore
+                    dt = dt.astimezone(pytz.UTC)
+                else:
+                    dt = datetime.fromisoformat(deployment_time.replace('Z', '+00:00'))
+            except:
+                dt = datetime.fromisoformat(deployment_time.replace('Z', '+00:00'))
+        else:
+            dt = datetime.fromisoformat(deployment_time.replace('Z', '+00:00'))
+    else:
+        dt = deployment_time
+    
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+    
+    singapore_time = dt.astimezone(singapore_tz)
+    
+    return {
+        "deployment_time": singapore_time.isoformat(),
+        "deployment_time_formatted": singapore_time.strftime("%d %B %Y, %H:%M:%S"),
+        "timezone": "Asia/Singapore"
+    }
+
 @app.get("/health")
 async def health_check():
     """Enhanced health check endpoint with Railway optimizations"""
