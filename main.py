@@ -640,6 +640,45 @@ async def stop_analysis(analysis_id: str):
         print(f"❌ Error stopping analysis {analysis_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to stop analysis: {str(e)}")
 
+@app.post("/cancel-upload/{analysis_id}")
+async def cancel_upload(analysis_id: str):
+    """
+    Cancel an upload and clean up any partial files
+    """
+    try:
+        # Remove from queue if present
+        job_queue[:] = [job for job in job_queue if job.get("analysis_id") != analysis_id]
+        
+        # Clean up any uploaded files
+        for file_path in UPLOAD_DIR.glob(f"{analysis_id}_*"):
+            try:
+                file_path.unlink()
+                print(f"🗑️ Deleted partial upload: {file_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete {file_path}: {e}")
+        
+        # Remove from analysis results if present
+        if analysis_id in analysis_results:
+            analysis_results[analysis_id]["status"] = "cancelled"
+            analysis_results[analysis_id]["message"] = "Upload cancelled by user"
+        
+        # Remove from running processes if present
+        if analysis_id in running_processes:
+            running_processes[analysis_id]["should_stop"] = True
+            del running_processes[analysis_id]
+        
+        print(f"🛑 Upload {analysis_id} cancelled and cleaned up")
+        
+        return {
+            "success": True,
+            "message": "Upload cancelled successfully",
+            "analysis_id": analysis_id
+        }
+        
+    except Exception as e:
+        print(f"❌ Error cancelling upload {analysis_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cancel upload: {str(e)}")
+
 @app.delete("/analysis/{analysis_id}")
 async def delete_analysis(analysis_id: str):
     """
