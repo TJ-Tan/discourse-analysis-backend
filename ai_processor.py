@@ -171,11 +171,43 @@ class VideoAnalysisProcessor:
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             
-            # Step 5: Enhanced score combination with weighted sub-components
-            logger.info("📊 Step 5: Calculating weighted component scores...")
-            await progress_callback(analysis_id, 92, "📊 Step 5: Calculating weighted component scores...")
+            # Step 5: Extract sample frames for display (3-7 frames)
+            logger.info("📸 Step 5: Extracting sample frames for display...")
+            sample_frames = []
+            if video_frames:
+                # Select 3-7 evenly spaced frames
+                num_frames_to_extract = min(7, max(3, len(video_frames)))
+                if len(video_frames) > num_frames_to_extract:
+                    # Select evenly spaced frames
+                    step = len(video_frames) // num_frames_to_extract
+                    selected_indices = [i * step for i in range(num_frames_to_extract)]
+                    if selected_indices[-1] >= len(video_frames):
+                        selected_indices[-1] = len(video_frames) - 1
+                else:
+                    selected_indices = list(range(len(video_frames)))
+                
+                for idx in selected_indices:
+                    frame_data = video_frames[idx]
+                    frame = frame_data['frame']
+                    timestamp = frame_data.get('timestamp', 0)
+                    
+                    # Convert frame to base64
+                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    sample_frames.append({
+                        'image': f"data:image/jpeg;base64,{frame_base64}",
+                        'timestamp': round(timestamp, 2),
+                        'frame_number': frame_data.get('frame_number', idx)
+                    })
             
-            final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis)
+            logger.info(f"✅ Extracted {len(sample_frames)} sample frames")
+            
+            # Step 6: Enhanced score combination with weighted sub-components
+            logger.info("📊 Step 6: Calculating weighted component scores...")
+            await progress_callback(analysis_id, 95, "📊 Step 6: Calculating weighted component scores...")
+            
+            final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, sample_frames)
             
             logger.info(f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
             await progress_callback(analysis_id, 100, f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
@@ -1357,7 +1389,7 @@ class VideoAnalysisProcessor:
                 'overall_summary': f'This lecture achieved an overall score of {round(overall_score, 1)}/10, demonstrating solid teaching fundamentals with opportunities for enhancement in student interaction and engagement techniques.'
             }
     
-    async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict) -> Dict[str, Any]:
+    async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, sample_frames: List[Dict] = None) -> Dict[str, Any]:
         """
         Enhanced analysis combination with detailed breakdown and transparency
         """
@@ -1576,6 +1608,10 @@ class VideoAnalysisProcessor:
                 'analysis_timestamp': datetime.now().isoformat()
             }
         }
+        
+        # Add sample frames for display
+        if sample_frames:
+            result['sample_frames'] = sample_frames
         
         # Generate Comprehensive Summary AFTER building the result dict
         comprehensive_summary = await self.generate_comprehensive_summary(
