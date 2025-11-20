@@ -171,7 +171,7 @@ class VideoAnalysisProcessor:
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             
-            # Step 5: Extract sample frames for display (3-7 frames)
+            # Step 5: Extract sample frames for display (3-7 frames) at original resolution
             logger.info("📸 Step 5: Extracting sample frames for display...")
             sample_frames = []
             if video_frames:
@@ -186,12 +186,27 @@ class VideoAnalysisProcessor:
                 else:
                     selected_indices = list(range(len(video_frames)))
                 
+                # Extract original frames from video for display (maintain aspect ratio)
+                cap = cv2.VideoCapture(str(video_path))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                
                 for idx in selected_indices:
                     frame_data = video_frames[idx]
-                    frame = frame_data['frame']
+                    frame_number = frame_data.get('frame_number', 0)
                     timestamp = frame_data.get('timestamp', 0)
                     
-                    # Convert frame to base64
+                    # Seek to the original frame in the video
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ret, original_frame = cap.read()
+                    
+                    if ret and original_frame is not None:
+                        # Use original frame (maintains aspect ratio)
+                        frame = original_frame
+                    else:
+                        # Fallback to resized frame if original can't be read
+                        frame = frame_data['frame']
+                    
+                    # Convert frame to base64 (maintain original aspect ratio)
                     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')
                     
@@ -200,8 +215,10 @@ class VideoAnalysisProcessor:
                         'timestamp': round(timestamp, 2),
                         'frame_number': frame_data.get('frame_number', idx)
                     })
+                
+                cap.release()
             
-            logger.info(f"✅ Extracted {len(sample_frames)} sample frames")
+            logger.info(f"✅ Extracted {len(sample_frames)} sample frames at original resolution")
             
             # Step 6: Enhanced score combination with weighted sub-components
             logger.info("📊 Step 6: Calculating weighted component scores...")
