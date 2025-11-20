@@ -384,65 +384,74 @@ async def queue_status():
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
+@app.get("/queue-list")
+async def queue_list():
+    """
+    Get detailed queue list with all jobs and their status
+    """
+    queue_list_data = []
+    
+    # Add currently processing job
+    for analysis_id, result in analysis_results.items():
+        if result.get('status') == 'processing':
+            queue_list_data.append({
+                "analysis_id": analysis_id,
+                "filename": result.get('filename', 'Unknown'),
+                "client_ip": result.get('client_ip', 'Unknown'),
+                "status": "processing",
+                "progress": result.get('progress', 0),
+                "queued_at": result.get('queued_at', ''),
+                "file_size": result.get('file_size', 0)
+            })
+            break
+    
+    # Add queued jobs
+    for idx, job in enumerate(job_queue):
+        # Get current status from analysis_results if available
+        job_status = "queued"
+        job_progress = 0
+        if job["analysis_id"] in analysis_results:
+            result = analysis_results[job["analysis_id"]]
+            job_status = result.get('status', 'queued')
+            job_progress = result.get('progress', 0)
+        
+        queue_list_data.append({
+            "analysis_id": job["analysis_id"],
+            "filename": job["filename"],
+            "client_ip": job.get("client_ip", "Unknown"),
+            "status": job_status,
+            "progress": job_progress,
+            "queued_at": job["queued_at"],
+            "file_size": job.get("file_size", 0),
+            "queue_position": idx + 1 + (1 if len([r for r in analysis_results.values() if r.get('status') == 'processing']) > 0 else 0)
+        })
+    
+    response = JSONResponse(content={
+        "queue": queue_list_data,
+        "total_in_queue": len(queue_list_data),
+        "currently_processing": len([r for r in analysis_results.values() if r.get('status') == 'processing'])
+    })
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 @app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_video(request: Request, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     """
     Upload a lecture video for enhanced AI-powered analysis with queue management
     """
+    # Get client IP address
+    client_ip = request.client.host if request.client else "unknown"
+    # Try to get real IP from headers (for proxies/load balancers)
+    if "x-forwarded-for" in request.headers:
+        client_ip = request.headers["x-forwarded-for"].split(",")[0].strip()
+    elif "x-real-ip" in request.headers:
+        client_ip = request.headers["x-real-ip"]
+    
     # Validate file type
     if not file.content_type.startswith('video/'):
         raise HTTPException(status_code=400, detail="File must be a video")
-    
-    # Check queue status
-    queue_status = get_queue_status()
-    
-    # Show warning if there's concurrent processing
-    if queue_status["warning_level"] != "none":
-        return {
-            "warning": True,
-            "warning_level": queue_status["warning_level"],
-            "warning_message": queue_status["warning_message"],
-            "can_proceed": queue_status["warning_level"] != "high",
-            "queue_status": queue_status
-        }
-    
-    if not queue_status["can_start_immediately"]:
-        # Add to queue
-        analysis_id = str(uuid.uuid4())
-        job_queue.append({
-            "analysis_id": analysis_id,
-            "filename": file.filename,
-            "queued_at": datetime.now().isoformat(),
-            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
-        })
-        
-        # Initialize analysis result as queued with Singapore time
-        import pytz
-        singapore_tz = pytz.timezone('Asia/Singapore')
-        singapore_time = datetime.now().astimezone(singapore_tz)
-        
-        analysis_results[analysis_id] = {
-            "status": "queued",
-            "progress": 0,
-            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
-            "log_messages": [{
-                "timestamp": singapore_time.isoformat(),
-                "message": f"📋 Video queued for processing. Position: {len(job_queue)} in queue",
-                "progress": 0
-            }],
-            "filename": file.filename,
-            "file_size": file.size,
-            "queued_at": singapore_time.isoformat(),
-            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
-        }
-        
-        return {
-            "analysis_id": analysis_id,
-            "status": "queued",
-            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
-            "queue_position": len(job_queue),
-            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
-        }
     
     # Check file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -462,7 +471,7 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
     # Generate unique ID for this analysis
     analysis_id = str(uuid.uuid4())
     
-    # Save the uploaded file
+    # Save the uploaded file (always save, even if queued)
     file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
     
     try:
@@ -473,70 +482,112 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
         # Verify file was saved correctly
         if not file_path.exists():
             raise HTTPException(status_code=500, detail="Failed to save uploaded file")
-        
-        # Get current configuration for analysis
-        current_config = get_configurable_parameters() if AI_AVAILABLE else {}
-        
-        # Initialize analysis status with enhanced info
-        # Initialize analysis result with Singapore time
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Check queue status
+    queue_status = get_queue_status()
+    
+    if not queue_status["can_start_immediately"]:
+        # Add to queue
         import pytz
         singapore_tz = pytz.timezone('Asia/Singapore')
         singapore_time = datetime.now().astimezone(singapore_tz)
         
+        job_queue.append({
+            "analysis_id": analysis_id,
+            "filename": file.filename,
+            "file_size": file.size,
+            "client_ip": client_ip,
+            "queued_at": singapore_time.isoformat(),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"],
+            "file_path": str(file_path)
+        })
+        
+        # Initialize analysis result as queued
         analysis_results[analysis_id] = {
-            "status": "processing",
-            "progress": 5,
-            "message": "File uploaded successfully. Starting enhanced AI analysis...",
+            "status": "queued",
+            "progress": 0,
+            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
             "log_messages": [{
                 "timestamp": singapore_time.isoformat(),
-                "message": "📤 File uploaded successfully. Preparing analysis...",
-                "progress": 5
+                "message": f"📋 Video queued for processing. Position: {len(job_queue)} in queue",
+                "progress": 0
             }],
             "filename": file.filename,
-            "file_size": file_path.stat().st_size,
-            "analysis_config": {
-                "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
-                "frame_interval": current_config.get("sampling_config", {}).get("frame_interval_seconds", 6),
-                "full_transcript": current_config.get("sampling_config", {}).get("use_full_transcript", True),
-                "enhanced_mode": True
-            }
+            "file_size": file.size,
+            "client_ip": client_ip,
+            "queued_at": singapore_time.isoformat(),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         }
-
-        # Immediately log initialization
-        print(f"🎯 INITIALIZED with {len(analysis_results[analysis_id]['log_messages'])} messages")
-        
-        # Add initial log message
-        analysis_results[analysis_id]["log_messages"].append({
-            "timestamp": datetime.now().isoformat(),
-            "message": "File uploaded successfully. Starting enhanced AI analysis...",
-            "progress": 5
-        })
-
-        # Start enhanced analysis in background
-        if AI_AVAILABLE:
-            background_tasks.add_task(process_video_with_enhanced_ai, analysis_id, file_path)
-        else:
-            background_tasks.add_task(process_video_mock, analysis_id, file_path)
         
         return {
             "analysis_id": analysis_id,
-            "message": "Video uploaded successfully. Enhanced AI analysis started.",
-            "filename": file.filename,
-            "estimated_time": "4-7 minutes" if AI_AVAILABLE else "15 seconds (mock)",
-            "enhancement_features": [
-                f"Analyzing up to {current_config.get('sampling_config', {}).get('max_frames_analyzed', 40)} video frames",
-                "Full transcript processing",
-                "Advanced voice variety analysis",
-                "Strategic pause effectiveness scoring",
-                "Weighted sub-component calculation"
-            ]
+            "status": "queued",
+            "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
+            "queue_position": len(job_queue),
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         }
-        
-    except Exception as e:
-        # Clean up file if something went wrong
-        if file_path.exists():
-            file_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Could not process file: {str(e)}")
+    
+    # Immediate processing (not queued)
+    # Get current configuration for analysis
+    current_config = get_configurable_parameters() if AI_AVAILABLE else {}
+    
+    # Initialize analysis status with enhanced info
+    # Initialize analysis result with Singapore time
+    import pytz
+    singapore_tz = pytz.timezone('Asia/Singapore')
+    singapore_time = datetime.now().astimezone(singapore_tz)
+    
+    analysis_results[analysis_id] = {
+        "status": "processing",
+        "progress": 5,
+        "message": "File uploaded successfully. Starting enhanced AI analysis...",
+        "log_messages": [{
+            "timestamp": singapore_time.isoformat(),
+            "message": "📤 File uploaded successfully. Preparing analysis...",
+            "progress": 5
+        }],
+        "filename": file.filename,
+        "file_size": file_path.stat().st_size,
+        "client_ip": client_ip,
+        "analysis_config": {
+            "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
+            "frame_interval": current_config.get("sampling_config", {}).get("frame_interval_seconds", 6),
+            "full_transcript": current_config.get("sampling_config", {}).get("use_full_transcript", True),
+            "enhanced_mode": True
+        }
+    }
+
+    # Immediately log initialization
+    print(f"🎯 INITIALIZED with {len(analysis_results[analysis_id]['log_messages'])} messages")
+    
+    # Add initial log message
+    analysis_results[analysis_id]["log_messages"].append({
+        "timestamp": datetime.now().isoformat(),
+        "message": "File uploaded successfully. Starting enhanced AI analysis...",
+        "progress": 5
+    })
+
+    # Start enhanced analysis in background
+    if AI_AVAILABLE:
+        background_tasks.add_task(process_video_with_enhanced_ai, analysis_id, file_path)
+    else:
+        background_tasks.add_task(process_video_mock_enhanced, analysis_id, file_path)
+    
+    return {
+        "analysis_id": analysis_id,
+        "message": "Video uploaded successfully. Enhanced AI analysis started.",
+        "filename": file.filename,
+        "estimated_time": "4-7 minutes" if AI_AVAILABLE else "15 seconds (mock)",
+        "enhancement_features": [
+            f"Analyzing up to {current_config.get('sampling_config', {}).get('max_frames_analyzed', 40)} video frames",
+            "Full transcript processing",
+            "Advanced voice variety analysis",
+            "Strategic pause effectiveness scoring",
+            "Weighted sub-component calculation"
+        ]
+    }
 
 @app.get("/analysis-status/{analysis_id}")
 async def get_analysis_status(analysis_id: str):
@@ -908,17 +959,17 @@ async def process_next_queued_job():
         if analysis_id in analysis_results:
             analysis_results[analysis_id]["status"] = "processing"
             analysis_results[analysis_id]["message"] = "Starting analysis..."
+            import pytz
+            singapore_tz = pytz.timezone('Asia/Singapore')
+            singapore_time = datetime.now().astimezone(singapore_tz)
             analysis_results[analysis_id]["log_messages"].append({
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": singapore_time.isoformat(),
                 "message": "🚀 Starting analysis from queue",
                 "progress": 5
             })
             
-            # Find the uploaded file
-            file_path = None
-            for path in UPLOAD_DIR.glob(f"{analysis_id}_*"):
-                file_path = path
-                break
+            # Use file path from queue
+            file_path = Path(next_job.get("file_path", ""))
             
             if file_path and file_path.exists():
                 # Start processing
