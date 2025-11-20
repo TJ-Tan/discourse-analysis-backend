@@ -1406,6 +1406,405 @@ class VideoAnalysisProcessor:
                 'overall_summary': f'This lecture achieved an overall score of {round(overall_score, 1)}/10, demonstrating solid teaching fundamentals with opportunities for enhancement in student interaction and engagement techniques.'
             }
     
+    def get_rubric_explanation(self, metric_name: str, value: float, score: float) -> Dict[str, str]:
+        """
+        Generate explanation for a metric based on the rubric
+        Returns rating, justification, and remarks based on score ranges
+        """
+        def get_score_range(score: float) -> tuple:
+            """Determine score range category"""
+            if score >= 9.0:
+                return (9.0, 10.0, "Excellent")
+            elif score >= 7.5:
+                return (7.5, 8.9, "Good")
+            elif score >= 6.0:
+                return (6.0, 7.4, "Average")
+            elif score >= 4.0:
+                return (4.0, 5.9, "Below Average")
+            else:
+                return (1.0, 3.9, "Poor")
+        
+        score_min, score_max, rating = get_score_range(score)
+        
+        # Speech Analysis Metrics
+        if metric_name == "speaking_rate":
+            wpm = value
+            if score >= 9.0:
+                justification = "Optimal cognitive processing speed. Research shows 140-180 WPM allows audience to comprehend complex information while maintaining engagement (Tauroza & Allison, 1990)."
+                remarks = "Cultural/linguistic differences (ESL instructors may differ). Context-specific filler words in technical subjects."
+            elif score >= 7.5:
+                justification = "Acceptable range but may be slightly too slow (less engaging) or fast (harder to process). Still effective for most content."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Borderline acceptable. Below 120 WPM risks losing attention; above 200 WPM challenges comprehension for complex topics."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Significantly impacts learning. Too slow = monotonous; too fast = overwhelming."
+                remarks = ""
+            else:
+                justification = "Severely impairs communication effectiveness."
+                remarks = ""
+                
+        elif metric_name == "filler_ratio":
+            filler_pct = value * 100
+            if score >= 9.0:
+                justification = "Professional standard. Minimal distraction, maintains credibility. News anchors average <2%."
+                remarks = "Consider subject-specific differences (math vs. humanities)."
+            elif score >= 7.5:
+                justification = "Noticeable but acceptable. Most experienced teachers fall here."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Begins to distract. Audience starts noticing \"um\"s and \"uh\"s."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Significantly impacts credibility. Suggests lack of preparation."
+                remarks = ""
+            else:
+                justification = "Severely distracting. May indicate nervousness or poor content mastery."
+                remarks = ""
+                
+        elif metric_name == "voice_variety":
+            index = value
+            if score >= 9.0:
+                justification = "Highly dynamic. Wide pitch and energy variation maintains attention. Radio/podcast quality."
+                remarks = "Subject-specific norms (storytelling vs. equation solving)."
+            elif score >= 7.5:
+                justification = "Moderate variation. Audience stays engaged most of the time."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Some variation but risks monotony in longer lectures."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Limited variation. Students may zone out."
+                remarks = ""
+            else:
+                justification = "Monotone delivery. Severely impacts engagement."
+                remarks = ""
+                
+        elif metric_name == "pause_effectiveness":
+            index = value
+            if score >= 9.0:
+                justification = "Optimal cognitive processing. Strategic pauses allow information processing."
+                remarks = "Cultural differences in pause patterns. Context-aware pausing, eg pause after complex concept, or wait for student answer."
+            elif score >= 7.5:
+                justification = "Good use of pauses but could be more strategic."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Some pauses but missed opportunities for emphasis."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Too few (rushed) or too many (hesitant)."
+                remarks = ""
+            else:
+                justification = "Disruptive to flow or completely rushed."
+                remarks = ""
+                
+        elif metric_name == "transcription_confidence":
+            confidence_pct = value * 100
+            if score >= 9.0:
+                justification = "Crystal clear articulation. Whisper transcribes with near-perfect accuracy."
+                remarks = "Separate audio quality issues from articulation issues. Account for technical jargon that Whisper may not know. Accent/dialect considerations."
+            elif score >= 7.5:
+                justification = "Mostly clear with minor unclear moments."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Noticeable articulation issues or audio quality problems."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Frequent unclear speech affects understanding."
+                remarks = ""
+            else:
+                justification = "Severely impacts communication. May be audio quality or articulation."
+                remarks = ""
+        
+        # Body Language Metrics
+        elif metric_name == "eye_contact":
+            if score >= 9.0:
+                justification = "Builds connection and trust. Critical for online/recorded lectures. Students report higher engagement with direct eye contact (Chen, 2012)."
+                remarks = "Account for legitimate reasons to look away (board work, demonstrations). Cultural sensitivity in eye contact expectations."
+            elif score >= 7.5:
+                justification = "Strong connection with acceptable reference to notes."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Connection established but weakened by looking away."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Weak connection. Appears disengaged or over-reliant on notes."
+                remarks = ""
+            else:
+                justification = "No connection. Reading or distracted."
+                remarks = "Limitation/accuracy depends on video recording quality and online lecture materials, ie audience cam not presence."
+                
+        elif metric_name == "gestures":
+            if score >= 9.0:
+                justification = "Enhances comprehension. Gestures can improve retention by 12% (Goldin-Meadow, 2000)."
+                remarks = "Cultural variations exist. Subject-specific gesture norms (physics vs. literature)."
+            elif score >= 7.5:
+                justification = "Helpful but could be more intentional."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Adds some visual interest but limited effectiveness."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Detracts from message or offers no support."
+                remarks = ""
+            else:
+                justification = "Actively harms communication."
+                remarks = ""
+                
+        elif metric_name == "posture":
+            if score >= 9.0:
+                justification = "Projects authority and confidence. Students perceive better teacher quality with good posture (Neill & Caswell, 1993)."
+                remarks = "Cultural variations exist. Sitting vs standing norms. Movement vs static posture balance."
+            elif score >= 7.5:
+                justification = "Professional with room for minor improvement."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Adequate but could project more confidence."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Undermines authority and engagement."
+                remarks = ""
+            else:
+                justification = "Significantly impacts perceived competence."
+                remarks = ""
+                
+        elif metric_name == "facial_engagement":
+            if score >= 9.0:
+                justification = "Emotional contagion. Instructor enthusiasm transfers to students (Patrick et al., 2000)."
+                remarks = "Content-appropriate expression (serious topic vs. humor). Cultural display rules for emotions. Balance between animated and professional."
+            elif score >= 7.5:
+                justification = "Engaging with minor flat moments."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Adequate but could show more energy."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Fails to convey enthusiasm or appropriate emotion."
+                remarks = ""
+            else:
+                justification = "Disconnects students from content."
+                remarks = ""
+                
+        elif metric_name == "professionalism":
+            if score >= 9.0:
+                justification = "Establishes credibility. Professional appearance increases perceived expertise (Mack & Rainey, 1990)."
+                remarks = "Discipline-specific norms (engineering vs. arts). Cultural/institutional dress codes. Balance formality with approachability."
+            elif score >= 7.5:
+                justification = "Appropriate for most contexts."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "May reduce perceived authority slightly."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Detracts from professional image."
+                remarks = ""
+            else:
+                justification = "Seriously undermines credibility."
+                remarks = ""
+        
+        # Teaching Effectiveness Metrics
+        elif metric_name == "content_organisation":
+            if score >= 9.0:
+                justification = "Cognitive load theory. Organised content reduces extraneous load (Sweller, 1988)."
+                remarks = "Discipline-specific organisational patterns. Length-appropriate structure expectations."
+            elif score >= 7.5:
+                justification = "Well-organised with room for refinement."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Students can follow but may miss connections."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Students struggle to build mental model."
+                remarks = ""
+            else:
+                justification = "Severely impairs learning."
+                remarks = ""
+                
+        elif metric_name == "engagement_techniques":
+            if score >= 9.0:
+                justification = "Active learning improves retention by 40-50% (Freeman et al., 2014)."
+                remarks = "Quality vs. quantity of engagement. Subject-appropriate engagement types."
+            elif score >= 7.5:
+                justification = "Engages students but could diversify."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Primarily lecture format with minimal interaction."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Students likely passive throughout."
+                remarks = ""
+            else:
+                justification = "Students are passive recipients only."
+                remarks = ""
+                
+        elif metric_name == "communication_clarity":
+            if score >= 9.0:
+                justification = "Comprehensibility is crucial factor in teaching effectiveness (Feldman, 1976)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Effective communication with room for precision."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Students grasp main ideas but miss details."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Students struggle to understand concepts."
+                remarks = ""
+            else:
+                justification = "Students cannot follow."
+                remarks = ""
+                
+        elif metric_name == "use_of_examples":
+            if score >= 9.0:
+                justification = "Concreteness principle. Examples improve transfer by 50% (Gentner et al., 2003)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Examples present but could add more variety."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Basic examples without depth."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Concepts remain abstract."
+                remarks = ""
+            else:
+                justification = "Students cannot relate to content."
+                remarks = ""
+                
+        elif metric_name == "knowledge_checking":
+            if score >= 9.0:
+                justification = "Formative assessment doubles learning gains (Black & William, 1998)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Monitoring understanding but could be more frequent."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Assumes understanding without verification."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "May not identify student confusion."
+                remarks = ""
+            else:
+                justification = "No feedback loop for learning."
+                remarks = ""
+        
+        # Interaction & Engagement Metrics
+        elif metric_name == "question_frequency":
+            if score >= 9.0:
+                justification = "Socratic method. Questions drive deep thinking (Overholser, 1992)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Regular questioning with room for depth."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Questions asked but limited cognitive challenge."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Minimal questioning, low cognitive demand."
+                remarks = ""
+            else:
+                justification = "No inquiry-based learning."
+                remarks = ""
+                
+        elif metric_name == "cognitive_level":
+            if score >= 9.0:
+                justification = "Critical thinking development. Higher-order thinking improves problem-solving (Zohar & Dori, 2003)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Good cognitive challenge with balance."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Some thinking required but limited depth."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Primarily surface-level thinking."
+                remarks = ""
+            else:
+                justification = "No critical thinking development."
+                remarks = ""
+                
+        elif metric_name == "interaction_opportunity":
+            if score >= 9.0:
+                justification = "Student-centered learning. Participation increases ownership (Deci & Ryan, 2000)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Students involved but could diversify."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "More instructor-centered than student-centered."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Primarily passive student role."
+                remarks = ""
+            else:
+                justification = "Students are observers only."
+                remarks = ""
+        
+        # Presentation Skills Metrics
+        elif metric_name == "energy":
+            if score >= 9.0:
+                justification = "Emotional contagion. Instructor enthusiasm transfers to students (Bettencourt et al., 1983)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Engaging with room for more consistency."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Functional but not motivating."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Fails to inspire or engage."
+                remarks = ""
+            else:
+                justification = "Disengages students."
+                remarks = ""
+                
+        elif metric_name == "voice_modulation":
+            if score >= 9.0:
+                justification = "Prosodic emphasis aids comprehension (Hincks, 2005)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Engaging vocal delivery."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Some variety but risks monotony."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Approaching monotone."
+                remarks = ""
+            else:
+                justification = "Flat, disengaging delivery."
+                remarks = ""
+                
+        elif metric_name == "time_management":
+            if score >= 9.0:
+                justification = "Pacing affects cognitive load (Sweller, 1988)."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Effective time use with minor improvements possible."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Time management needs attention."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Impacts content coverage and understanding."
+                remarks = ""
+            else:
+                justification = "Disrupts learning severely."
+                remarks = ""
+        
+        else:
+            # Default explanation for unknown metrics
+            justification = f"This metric scored {score:.1f}/10, indicating {rating.lower()} performance."
+            remarks = ""
+        
+        return {
+            'rating': rating,
+            'justification': justification,
+            'remarks': remarks,
+            'score_range': f"{score_min:.1f}-{score_max:.1f}"
+        }
+    
     async def combine_analysis_enhanced(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, sample_frames: List[Dict] = None) -> Dict[str, Any]:
         """
         Enhanced analysis combination with detailed breakdown and transparency
@@ -1454,6 +1853,14 @@ class VideoAnalysisProcessor:
                     'voice_variety_index': round(speech_analysis.get('voice_variety_score', 0.5), 3),
                     'pause_effectiveness_index': round(speech_analysis.get('pause_effectiveness_score', 0.5), 3),
                     'transcription_confidence': round(speech_analysis.get('confidence', 0.8) * 100, 1)
+                },
+                # Explanations based on rubric
+                'explanations': {
+                    'speaking_rate': self.get_rubric_explanation('speaking_rate', speech_analysis.get('speaking_rate', 150), round(min(10, max(1, 10 - abs(speech_analysis.get('speaking_rate', 150) - 150) / 20)), 1)),
+                    'filler_ratio': self.get_rubric_explanation('filler_ratio', speech_analysis.get('filler_ratio', 0.05), round(10 - (speech_analysis.get('filler_ratio', 0) * 20), 1)),
+                    'voice_variety': self.get_rubric_explanation('voice_variety', speech_analysis.get('voice_variety_score', 0.5), round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1)),
+                    'pause_effectiveness': self.get_rubric_explanation('pause_effectiveness', speech_analysis.get('pause_effectiveness_score', 0.5), round(speech_analysis.get('pause_effectiveness_score', 0.5) * 10, 1)),
+                    'transcription_confidence': self.get_rubric_explanation('transcription_confidence', speech_analysis.get('confidence', 0.8), round(speech_analysis.get('confidence', 0.8) * 10, 1))
                 }
             },
             
@@ -1476,6 +1883,14 @@ class VideoAnalysisProcessor:
                     'posture_raw': round(visual_analysis.get('scores', {}).get('posture', 7), 2),
                     'engagement_raw': round(visual_analysis.get('scores', {}).get('engagement', 7), 2),
                     'professionalism_raw': round(visual_analysis.get('scores', {}).get('professionalism', 8), 2)
+                },
+                # Explanations based on rubric
+                'explanations': {
+                    'eye_contact': self.get_rubric_explanation('eye_contact', visual_analysis.get('scores', {}).get('eye_contact', 7), round(visual_analysis.get('scores', {}).get('eye_contact', 7), 1)),
+                    'gestures': self.get_rubric_explanation('gestures', visual_analysis.get('scores', {}).get('gestures', 7), round(visual_analysis.get('scores', {}).get('gestures', 7), 1)),
+                    'posture': self.get_rubric_explanation('posture', visual_analysis.get('scores', {}).get('posture', 7), round(visual_analysis.get('scores', {}).get('posture', 7), 1)),
+                    'facial_engagement': self.get_rubric_explanation('facial_engagement', visual_analysis.get('scores', {}).get('engagement', 7), round(visual_analysis.get('scores', {}).get('engagement', 7), 1)),
+                    'professionalism': self.get_rubric_explanation('professionalism', visual_analysis.get('scores', {}).get('professionalism', 8), round(visual_analysis.get('scores', {}).get('professionalism', 8), 1))
                 }
             },
             
@@ -1487,7 +1902,15 @@ class VideoAnalysisProcessor:
                 'communication_clarity': round(pedagogical_analysis.get('communication_clarity', 7), 1),
                 'use_of_examples': round(pedagogical_analysis.get('use_of_examples', 7), 1),
                 'knowledge_checking': round(pedagogical_analysis.get('knowledge_checking', 7), 1),
-                'feedback': pedagogical_analysis.get('recommendations', [])
+                'feedback': pedagogical_analysis.get('recommendations', []),
+                # Explanations based on rubric
+                'explanations': {
+                    'content_organisation': self.get_rubric_explanation('content_organisation', pedagogical_analysis.get('content_organization', 7), round(pedagogical_analysis.get('content_organization', 7), 1)),
+                    'engagement_techniques': self.get_rubric_explanation('engagement_techniques', pedagogical_analysis.get('engagement_techniques', 7), round(pedagogical_analysis.get('engagement_techniques', 7), 1)),
+                    'communication_clarity': self.get_rubric_explanation('communication_clarity', pedagogical_analysis.get('communication_clarity', 7), round(pedagogical_analysis.get('communication_clarity', 7), 1)),
+                    'use_of_examples': self.get_rubric_explanation('use_of_examples', pedagogical_analysis.get('use_of_examples', 7), round(pedagogical_analysis.get('use_of_examples', 7), 1)),
+                    'knowledge_checking': self.get_rubric_explanation('knowledge_checking', pedagogical_analysis.get('knowledge_checking', 7), round(pedagogical_analysis.get('knowledge_checking', 7), 1))
+                }
             },
             
             # Presentation Skills
@@ -1497,7 +1920,14 @@ class VideoAnalysisProcessor:
                 'energy': round(speech_analysis.get('speaking_ratio', 0.7) * 10, 1),
                 'voice_modulation': round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1),
                 'time_management': round(self.assess_time_management(speech_analysis), 1),
-                'feedback': self.generate_presentation_feedback_enhanced(speech_analysis, visual_analysis)
+                'feedback': self.generate_presentation_feedback_enhanced(speech_analysis, visual_analysis),
+                # Explanations based on rubric
+                'explanations': {
+                    'energy': self.get_rubric_explanation('energy', speech_analysis.get('speaking_ratio', 0.7), round(speech_analysis.get('speaking_ratio', 0.7) * 10, 1)),
+                    'voice_modulation': self.get_rubric_explanation('voice_modulation', speech_analysis.get('voice_variety_score', 0.5), round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1)),
+                    'professionalism': self.get_rubric_explanation('professionalism', visual_analysis.get('scores', {}).get('professionalism', 8), round(visual_analysis.get('scores', {}).get('professionalism', 8), 1)),
+                    'time_management': self.get_rubric_explanation('time_management', self.assess_time_management(speech_analysis), round(self.assess_time_management(speech_analysis), 1))
+                }
             },
 
             # NEW: Interaction & Engagement Analysis
@@ -1515,7 +1945,13 @@ class VideoAnalysisProcessor:
                     f"Asked {interaction_analysis.get('total_questions', 0)} questions at {interaction_analysis.get('cognitive_level', 'medium')} cognitive level",
                     f"Interaction frequency: {interaction_analysis.get('interaction_frequency', 7)}/10",
                     f"Question quality: {interaction_analysis.get('question_quality', 7)}/10"
-                ]
+                ],
+                # Explanations based on rubric
+                'explanations': {
+                    'question_frequency': self.get_rubric_explanation('question_frequency', interaction_analysis.get('interaction_frequency', 7), interaction_analysis.get('interaction_frequency', 7)),
+                    'cognitive_level': self.get_rubric_explanation('cognitive_level', interaction_analysis.get('question_quality', 7), interaction_analysis.get('question_quality', 7)),
+                    'interaction_opportunity': self.get_rubric_explanation('interaction_opportunity', interaction_analysis.get('student_engagement_opportunities', 7), interaction_analysis.get('student_engagement_opportunities', 7))
+                }
             },
             
             # Full Transcript with Timecodes
