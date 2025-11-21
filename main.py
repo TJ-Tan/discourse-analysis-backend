@@ -110,8 +110,8 @@ job_queue = []
 MAX_CONCURRENT_JOBS = 1  # Railway can handle 1 job at a time
 
 # Configuration - Railway Optimized
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
-MAX_VIDEO_DURATION = 3600  # 1 hour in seconds
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+MAX_VIDEO_DURATION = 7200  # 2 hours in seconds
 ALLOWED_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv'}
 
 # Railway-specific optimizations
