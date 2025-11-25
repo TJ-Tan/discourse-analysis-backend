@@ -879,7 +879,8 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
                 analysis_results[analysis_id]["step_details"] = {}
             analysis_results[analysis_id]["step_details"].update(details)
         
-        print(f"✅ Progress: [{progress}%] {message}")
+        # Removed print statement to reduce logging rate (was causing Railway rate limit issues)
+        # print(f"✅ Progress: [{progress}%] {message}")
         
         # Force immediate update by adding a timestamp and counter to trigger SSE
         analysis_results[analysis_id]["last_update"] = current_time.isoformat()
