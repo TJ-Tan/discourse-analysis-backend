@@ -6,6 +6,7 @@ import cv2
 import librosa
 import numpy as np
 from openai import OpenAI
+from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
 from typing import Dict, List, Any, Optional
 import base64
 import json
@@ -931,8 +932,13 @@ class VideoAnalysisProcessor:
         )
         
         try:
-            return json.loads(response.choices[0].message.content)
-        except json.JSONDecodeError:
+            # Check if response content exists
+            response_content = response.choices[0].message.content
+            if not response_content:
+                raise ValueError("AI response content is None or empty")
+            
+            return json.loads(response_content)
+        except (json.JSONDecodeError, ValueError, AttributeError):
             return {
                 'content_organization': 7.5,
                 'engagement_techniques': 7.0,
@@ -979,71 +985,83 @@ class VideoAnalysisProcessor:
             frame_base64 = base64.b64encode(buffer).decode('utf-8')
             
             # Enhanced frame analysis with GPT-4o Vision
-            response = openai_client.chat.completions.create(
-                model="gpt-4o", # Vision requires gpt-4o, not mini
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
-                                
-                                1. Eye Contact & Gaze Direction: 
-                                   - Looking directly at camera/students vs reading/looking away
-                                   - Natural vs forced eye contact
-                                   - Consistency of gaze engagement
-                                
-                                2. Hand Gestures & Body Language:
-                                   - Purposeful gestures supporting content vs nervous/distracting movements
-                                   - Open, engaging gestures vs closed, defensive postures
-                                   - Gesture variety and naturalness
-                                
-                                3. Posture & Positioning:
-                                   - Confident, upright stance vs slouching/poor posture
-                                   - Appropriate positioning relative to camera/audience
-                                   - Movement and spatial awareness
-                                
-                                4. Facial Expressions & Engagement:
-                                   - Animated, engaging expressions vs flat/monotone
-                                   - Appropriate emotional expression for content
-                                   - Genuine enthusiasm and interest
-                                
-                                5. Professional Appearance:
-                                   - Appropriate dress and grooming
-                                   - Visual presentation quality
-                                   - Overall professional demeanor
-                                
-                                Rate each aspect from 1-10 and provide specific observations.
-                                Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{frame_base64}",
-                                    "detail": "high"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=600
-            )
-            
             try:
-                analysis = json.loads(response.choices[0].message.content)
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o", # Vision requires gpt-4o, not mini
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
+                                    
+                                    1. Eye Contact & Gaze Direction: 
+                                       - Looking directly at camera/students vs reading/looking away
+                                       - Natural vs forced eye contact
+                                       - Consistency of gaze engagement
+                                    
+                                    2. Hand Gestures & Body Language:
+                                       - Purposeful gestures supporting content vs nervous/distracting movements
+                                       - Open, engaging gestures vs closed, defensive postures
+                                       - Gesture variety and naturalness
+                                    
+                                    3. Posture & Positioning:
+                                       - Confident, upright stance vs slouching/poor posture
+                                       - Appropriate positioning relative to camera/audience
+                                       - Movement and spatial awareness
+                                    
+                                    4. Facial Expressions & Engagement:
+                                       - Animated, engaging expressions vs flat/monotone
+                                       - Appropriate emotional expression for content
+                                       - Genuine enthusiasm and interest
+                                    
+                                    5. Professional Appearance:
+                                       - Appropriate dress and grooming
+                                       - Visual presentation quality
+                                       - Overall professional demeanor
+                                    
+                                    Rate each aspect from 1-10 and provide specific observations.
+                                    Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{frame_base64}",
+                                        "detail": "high"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_tokens=600
+                )
+                
+                # Check if response and choices exist
+                if not response or not response.choices or len(response.choices) == 0:
+                    raise ValueError("OpenAI API returned empty response or no choices")
+                
+                # Check if response content exists
+                response_content = response.choices[0].message.content
+                if not response_content:
+                    raise ValueError("AI response content is None or empty")
+                
+                analysis = json.loads(response_content)
                 analysis['timestamp'] = timestamp
                 frame_analyses.append(analysis)
                 logger.info(f"📊 Frame {i+1}/{len(selected_frames)} analyzed (t={timestamp:.1f}s)")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError, AttributeError, APIError, APIConnectionError, APITimeoutError, RateLimitError, Exception) as e:
                 # Enhanced fallback with timestamp
+                error_msg = str(e) if e else "Unknown error"
+                error_type = type(e).__name__
+                logger.warning(f"⚠️ Frame {i+1} analysis failed ({error_type}): {error_msg}, using fallback scores")
                 frame_analyses.append({
                     'eye_contact_score': 7,
                     'gestures_score': 7,
                     'posture_score': 7,
                     'engagement_score': 7,
                     'professionalism_score': 8,
-                    'detailed_observations': [f'Unable to parse analysis for frame at {timestamp:.1f}s'],
+                    'detailed_observations': [f'Unable to parse analysis for frame at {timestamp:.1f}s: {error_msg}'],
                     'timestamp': timestamp
                 })
         
@@ -1178,8 +1196,13 @@ class VideoAnalysisProcessor:
         )
         
         try:
-            return json.loads(response.choices[0].message.content)
-        except json.JSONDecodeError:
+            # Check if response content exists
+            response_content = response.choices[0].message.content
+            if not response_content:
+                raise ValueError("AI response content is None or empty")
+            
+            return json.loads(response_content)
+        except (json.JSONDecodeError, ValueError, AttributeError):
             # Enhanced fallback analysis
             return {
                 'content_organization': 7.5,
@@ -1216,84 +1239,330 @@ class VideoAnalysisProcessor:
             }
         
 
+    def detect_questions_pattern_matching(self, words_data: List[Dict]) -> List[Dict]:
+        """
+        Use pattern matching to detect potential questions from word timestamps
+        This provides a first-pass filter before AI analysis
+        """
+        if not words_data:
+            return []
+        
+        # Question words that typically start questions
+        question_starters = [
+            'what', 'why', 'how', 'when', 'where', 'who', 'which', 'whose', 'whom',
+            'can', 'could', 'would', 'should', 'will', 'may', 'might', 'do', 'does', 'did',
+            'is', 'are', 'was', 'were', 'am', 'have', 'has', 'had'
+        ]
+        
+        # Question patterns (phrases that indicate questions)
+        question_patterns = [
+            'what if', 'what about', 'what do you', 'what would', 'what should',
+            'why do', 'why would', 'why should', 'why don\'t', 'why doesn\'t',
+            'how do', 'how would', 'how should', 'how can', 'how could',
+            'can you', 'could you', 'would you', 'should we', 'will you',
+            'do you', 'does anyone', 'did you', 'have you', 'has anyone',
+            'let\'s', 'let us', 'turn to', 'can someone', 'does someone',
+            'any questions', 'anyone know', 'any thoughts', 'any ideas'
+        ]
+        
+        detected_questions = []
+        i = 0
+        
+        while i < len(words_data):
+            word = words_data[i].get('word', '').lower().strip()
+            start_time = words_data[i].get('start', 0)
+            
+            # Check if word starts with a question starter
+            is_question_start = word in question_starters
+            
+            # Check for question patterns (2-3 word windows)
+            is_question_pattern = False
+            question_text = ''
+            question_end_idx = i
+            
+            if i < len(words_data) - 1:
+                # Check 2-word patterns
+                two_word = f"{word} {words_data[i+1].get('word', '').lower()}".strip()
+                if any(pattern in two_word for pattern in question_patterns):
+                    is_question_pattern = True
+                    question_end_idx = min(i + 15, len(words_data))  # Capture up to 15 words
+                    question_words = [words_data[j].get('word', '') for j in range(i, question_end_idx)]
+                    question_text = ' '.join(question_words)
+            
+            if i < len(words_data) - 2:
+                # Check 3-word patterns
+                three_word = f"{word} {words_data[i+1].get('word', '').lower()} {words_data[i+2].get('word', '').lower()}".strip()
+                if any(pattern in three_word for pattern in question_patterns):
+                    is_question_pattern = True
+                    question_end_idx = min(i + 15, len(words_data))
+                    question_words = [words_data[j].get('word', '') for j in range(i, question_end_idx)]
+                    question_text = ' '.join(question_words)
+            
+            # Detect sentence structure: question word at start + verb inversion or question structure
+            if is_question_start or is_question_pattern:
+                # Capture the full sentence/question (up to 20 words or until sentence end)
+                sentence_end = i
+                for j in range(i, min(i + 25, len(words_data))):
+                    sentence_end = j
+                    next_word = words_data[j].get('word', '').lower()
+                    # Stop at common sentence endings (if we detect pauses or sentence boundaries)
+                    # We'll use a simple heuristic: stop after 20 words or if we see certain patterns
+                    if j > i + 20:
+                        break
+                
+                # Extract the question text
+                if not question_text:
+                    question_words = [words_data[j].get('word', '') for j in range(i, min(sentence_end + 1, len(words_data)))]
+                    question_text = ' '.join(question_words)
+                
+                # Only add if it's a substantial question (at least 3 words)
+                if len(question_text.split()) >= 3:
+                    detected_questions.append({
+                        'question': question_text.strip(),
+                        'start_time': start_time,
+                        'start_idx': i,
+                        'end_idx': min(sentence_end + 1, len(words_data)),
+                        'confidence': 'high' if is_question_pattern else 'medium',
+                        'detection_method': 'pattern_matching'
+                    })
+                    # Skip ahead to avoid overlapping detections
+                    i = sentence_end + 1
+                    continue
+            
+            i += 1
+        
+        return detected_questions
+
     async def analyze_interaction_engagement(self, speech_analysis: Dict) -> Dict[str, Any]:
         """
         Analyze instructor-student interaction and questioning techniques
+        Enhanced with pattern matching + AI analysis
         """
         transcript = speech_analysis.get('transcript', '')
         words_data = speech_analysis.get('word_timestamps', [])
         
-        # Detect questions and interactions using AI
+        # Step 1: Pattern matching to detect potential questions
+        pattern_matched_questions = self.detect_questions_pattern_matching(words_data)
+        
+        # Step 2: Prepare context for AI with pattern-matched questions as hints
+        pattern_questions_text = ""
+        if pattern_matched_questions:
+            pattern_questions_text = "\n\nPattern-matched potential questions (for reference):\n"
+            for q in pattern_matched_questions[:10]:  # Limit to first 10
+                pattern_questions_text += f"- {q['question'][:100]}... (confidence: {q['confidence']})\n"
+        
+        # Step 3: Enhanced AI analysis with better prompts
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert in educational interaction analysis. Identify:
-                    1. High-level/open-ended questions (e.g., "Why do you think...", "How would you...", "What if...")
-                    2. Student interaction moments (e.g., "Let's hear from...", "Can someone explain...", "Turn to your partner...")
-                    3. Cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...")
-                    
-                    For each interaction, provide the approximate timestamp and classify the type."""
+                    "content": """You are an expert in educational interaction analysis. Your task is to identify questions and interaction moments in lecture transcripts.
+
+IMPORTANT: The transcript has NO punctuation marks (no question marks, periods, etc.). You must identify questions based on:
+1. Sentence structure (question words: what, why, how, when, where, who, which, can, could, would, should, do, does, did, is, are, was, were, have, has)
+2. Semantic meaning and intent (even if not explicitly structured as questions)
+3. Interaction patterns (e.g., "Let's hear from...", "Can someone...", "Turn to your partner...")
+4. Cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...", "Think about...")
+
+Classify questions as:
+- High-level/open-ended: Require analysis, evaluation, or synthesis (e.g., "Why do you think...", "How would you...", "What if...")
+- Clarification: Seek understanding (e.g., "Do you understand...", "Any questions...")
+- Rhetorical: Don't expect answers but engage thinking
+- Direct: Simple factual questions
+
+For each interaction, provide the approximate timestamp and classify the type."""
                 },
                 {
                     "role": "user",
-                    "content": f"""Analyze this lecture transcript for interaction and questioning:
-                    
-                    {transcript}
-                    
-                    Return as JSON with:
-                    - high_level_questions: list of {{"question": str, "approx_time": "MM:SS", "type": str}}
-                    - interaction_moments: list of {{"moment": str, "approx_time": "MM:SS", "type": str}}
-                    - interaction_frequency: score 1-10
-                    - question_quality: score 1-10
-                    - student_engagement_opportunities: score 1-10
-                    - cognitive_level: "low/medium/high"
-                    """
+                    "content": f"""Analyze this lecture transcript for interaction and questioning. The transcript has NO punctuation, so identify questions by structure and meaning.
+
+Transcript:
+{transcript[:6000]}{'...' if len(transcript) > 6000 else ''}
+{pattern_questions_text}
+
+Return as JSON with:
+- high_level_questions: list of {{"question": str (exact text from transcript), "approx_time": "MM:SS", "type": str (e.g., "open-ended", "clarification", "rhetorical", "direct"), "cognitive_level": str ("low"/"medium"/"high")}}
+- interaction_moments: list of {{"moment": str (exact text), "approx_time": "MM:SS", "type": str (e.g., "student_call", "pair_work", "discussion_prompt")}}
+- interaction_frequency: score 1-10 (based on number and frequency of interactions)
+- question_quality: score 1-10 (based on depth, cognitive level, and pedagogical value)
+- student_engagement_opportunities: score 1-10 (based on opportunities for student participation)
+- cognitive_level: "low"/"medium"/"high" (overall cognitive demand of questions)
+
+Focus on identifying ALL questions, including those that might be implicit or rhetorical."""
                 }
             ],
-            max_tokens=1000
+            max_tokens=2000,  # Increased for more comprehensive analysis
+            temperature=0.3  # Lower temperature for more consistent detection
         )
         
         try:
-            analysis = json.loads(response.choices[0].message.content)
+            # Check if response content exists
+            response_content = response.choices[0].message.content
+            if not response_content:
+                raise ValueError("AI response content is None or empty")
             
-            # Match questions to precise timestamps
-            for question_data in analysis.get('high_level_questions', []):
-                question_text = question_data['question']
-                # Find approximate timestamp in word data
-                for i, word_data in enumerate(words_data):
-                    if i < len(words_data) - 5:  # Look at 5-word window
-                        window = ' '.join([words_data[j].get('word', '') for j in range(i, min(i+5, len(words_data)))])
-                        if question_text[:20].lower() in window.lower():
-                            question_data['precise_timestamp'] = self.format_timestamp(word_data.get('start', 0))
-                            question_data['start_time'] = round(word_data.get('start', 0), 2)
+            analysis = json.loads(response_content)
+            
+            # Step 4: Merge pattern-matched questions with AI-detected questions
+            ai_questions = analysis.get('high_level_questions', [])
+            
+            # Match AI questions to precise timestamps
+            for question_data in ai_questions:
+                question_text = question_data.get('question', '')
+                if not question_text:
+                    continue
+                
+                # Find precise timestamp in word data
+                best_match = None
+                best_match_score = 0
+                
+                # Try to find the question in the word data
+                question_words_lower = question_text.lower().split()
+                if len(question_words_lower) >= 3:
+                    # Look for matching sequence of words
+                    for i in range(len(words_data) - len(question_words_lower) + 1):
+                        window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + len(question_words_lower) + 5, len(words_data)))]
+                        window_text = ' '.join(window_words)
+                        
+                        # Check if first few words of question match
+                        first_words = ' '.join(question_words_lower[:3])
+                        if first_words in window_text:
+                            # Calculate match score
+                            matches = sum(1 for w in question_words_lower[:5] if w in window_text)
+                            if matches > best_match_score:
+                                best_match_score = matches
+                                best_match = words_data[i]
+                
+                if best_match:
+                    question_data['precise_timestamp'] = self.format_timestamp(best_match.get('start', 0))
+                    question_data['start_time'] = round(best_match.get('start', 0), 2)
+                else:
+                    # Fallback: use approximate time if provided
+                    if 'approx_time' in question_data:
+                        # Try to parse MM:SS format
+                        try:
+                            time_parts = question_data['approx_time'].split(':')
+                            if len(time_parts) == 2:
+                                minutes = int(time_parts[0])
+                                seconds = int(time_parts[1])
+                                total_seconds = minutes * 60 + seconds
+                                question_data['precise_timestamp'] = self.format_timestamp(total_seconds)
+                                question_data['start_time'] = total_seconds
+                        except:
+                            pass
+            
+            # Merge pattern-matched questions that weren't caught by AI
+            ai_question_texts = {q.get('question', '').lower()[:50] for q in ai_questions}
+            for pattern_q in pattern_matched_questions:
+                pattern_text = pattern_q['question'].lower()[:50]
+                # Only add if not already detected by AI
+                if not any(pattern_text in ai_text or ai_text in pattern_text for ai_text in ai_question_texts):
+                    # Add pattern-matched question with timestamp
+                    timestamp = self.format_timestamp(pattern_q['start_time'])
+                    ai_questions.append({
+                        'question': pattern_q['question'],
+                        'precise_timestamp': timestamp,
+                        'start_time': pattern_q['start_time'],
+                        'type': 'detected',
+                        'cognitive_level': 'medium',
+                        'detection_method': 'pattern_matching',
+                        'confidence': pattern_q['confidence']
+                    })
+            
+            # Sort questions by timestamp
+            ai_questions.sort(key=lambda x: x.get('start_time', 0))
+            
+            # Match interaction moments to timestamps
+            for moment_data in analysis.get('interaction_moments', []):
+                moment_text = moment_data.get('moment', '')
+                if not moment_text:
+                    continue
+                
+                # Find timestamp similar to question matching
+                moment_words_lower = moment_text.lower().split()
+                if len(moment_words_lower) >= 2:
+                    for i in range(len(words_data) - len(moment_words_lower) + 1):
+                        window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + len(moment_words_lower) + 3, len(words_data)))]
+                        window_text = ' '.join(window_words)
+                        
+                        first_words = ' '.join(moment_words_lower[:2])
+                        if first_words in window_text:
+                            moment_data['precise_timestamp'] = self.format_timestamp(words_data[i].get('start', 0))
+                            moment_data['start_time'] = round(words_data[i].get('start', 0), 2)
                             break
             
+            # Calculate scores - if no questions detected, adjust scores accordingly
+            total_questions = len(ai_questions)
+            total_interactions = len(analysis.get('interaction_moments', []))
+            
+            # If no questions/interactions detected, use lower default scores
+            if total_questions == 0 and total_interactions == 0:
+                interaction_frequency = 3.0  # Low score when no interactions
+                question_quality = 3.0  # Low score when no questions
+                student_engagement_opportunities = 3.0  # Low score when no engagement
+                cognitive_level = 'low'
+            else:
+                # Use AI-provided scores or defaults
+                interaction_frequency = analysis.get('interaction_frequency', 7) if total_questions > 0 or total_interactions > 0 else 3.0
+                question_quality = analysis.get('question_quality', 7) if total_questions > 0 else 3.0
+                student_engagement_opportunities = analysis.get('student_engagement_opportunities', 7) if total_interactions > 0 else 3.0
+                cognitive_level = analysis.get('cognitive_level', 'medium')
+            
             return {
-                'score': round((analysis.get('interaction_frequency', 7) + analysis.get('question_quality', 7) + analysis.get('student_engagement_opportunities', 7)) / 3, 1),
-                'interaction_frequency': analysis.get('interaction_frequency', 7),
-                'question_quality': analysis.get('question_quality', 7),
-                'student_engagement_opportunities': analysis.get('student_engagement_opportunities', 7),
-                'cognitive_level': analysis.get('cognitive_level', 'medium'),
-                'high_level_questions': analysis.get('high_level_questions', [])[:10],
-                'interaction_moments': analysis.get('interaction_moments', [])[:10],
-                'total_questions': len(analysis.get('high_level_questions', [])),
-                'total_interactions': len(analysis.get('interaction_moments', []))
+                'score': round((interaction_frequency + question_quality + student_engagement_opportunities) / 3, 1),
+                'interaction_frequency': round(interaction_frequency, 1),
+                'question_quality': round(question_quality, 1),
+                'student_engagement_opportunities': round(student_engagement_opportunities, 1),
+                'cognitive_level': cognitive_level,
+                'high_level_questions': ai_questions[:15],  # Increased limit
+                'interaction_moments': analysis.get('interaction_moments', [])[:15],
+                'total_questions': total_questions,
+                'total_interactions': total_interactions
             }
             
-        except json.JSONDecodeError:
-            return {
-                'score': 6.5,
-                'interaction_frequency': 6.5,
-                'question_quality': 6.5,
-                'student_engagement_opportunities': 6.5,
-                'cognitive_level': 'medium',
-                'high_level_questions': [],
-                'interaction_moments': [],
-                'total_questions': 0,
-                'total_interactions': 0
-            }
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
+            error_msg = str(e) if e else "Unknown error"
+            logger.error(f"Error in interaction analysis: {error_msg}")
+            # Fallback: use pattern-matched questions if AI fails
+            fallback_questions = []
+            for q in pattern_matched_questions[:10]:
+                fallback_questions.append({
+                    'question': q['question'],
+                    'precise_timestamp': self.format_timestamp(q['start_time']),
+                    'start_time': q['start_time'],
+                    'type': 'detected',
+                    'cognitive_level': 'medium'
+                })
+            
+            # Use fallback questions if available, otherwise use low scores
+            total_questions = len(fallback_questions)
+            if total_questions == 0:
+                # No questions detected at all
+                return {
+                    'score': 3.0,
+                    'interaction_frequency': 3.0,
+                    'question_quality': 3.0,
+                    'student_engagement_opportunities': 3.0,
+                    'cognitive_level': 'low',
+                    'high_level_questions': [],
+                    'interaction_moments': [],
+                    'total_questions': 0,
+                    'total_interactions': 0
+                }
+            else:
+                # Some pattern-matched questions found
+                return {
+                    'score': 6.5,
+                    'interaction_frequency': 6.5,
+                    'question_quality': 6.5,
+                    'student_engagement_opportunities': 6.5,
+                    'cognitive_level': 'medium',
+                    'high_level_questions': fallback_questions,
+                    'interaction_moments': [],
+                    'total_questions': total_questions,
+                    'total_interactions': 0
+                }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
         """
@@ -1390,9 +1659,14 @@ class VideoAnalysisProcessor:
         )
         
         try:
-            summary = json.loads(response.choices[0].message.content)
+            # Check if response content exists
+            response_content = response.choices[0].message.content
+            if not response_content:
+                raise ValueError("AI response content is None or empty")
+            
+            summary = json.loads(response_content)
             return summary
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, AttributeError):
             return {
                 'content_review': 'The lecture covered the material systematically with clear explanations.',
                 'presentation_review': 'The instructor demonstrated good delivery with professional presence.',
