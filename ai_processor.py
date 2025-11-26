@@ -735,6 +735,26 @@ class VideoAnalysisProcessor:
         
         await self.progress_callback(self.analysis_id, 42, f"📝 Full transcript length: {len(transcript_text)} characters")
         
+        # Get word-level data early (needed for intonation analysis)
+        # Handle both single response and chunked responses (CombinedResponse)
+        try:
+            if hasattr(transcript_response, 'words'):
+                words_data = transcript_response.words
+            elif isinstance(transcript_response, dict) and 'words' in transcript_response:
+                words_data = transcript_response['words']
+            else:
+                # Try to get words from the response object
+                words_data = getattr(transcript_response, 'words', [])
+            
+            # Ensure words_data is a list
+            if words_data is None:
+                words_data = []
+            
+            logger.info(f"📊 Word timestamps available: {len(words_data)} words")
+        except Exception as e:
+            logger.warning(f"⚠️ Error extracting word timestamps: {e}")
+            words_data = []
+        
         # Enhanced speech metrics calculation
         logger.info("🔢 Calculating enhanced speech metrics...")
         await self.progress_callback(self.analysis_id, 43, "🔢 Calculating enhanced speech metrics...")
@@ -770,9 +790,6 @@ class VideoAnalysisProcessor:
         filler_count = 0
         filler_details = []
         filler_timecodes = []
-        
-        # Get word-level data
-        words_data = getattr(transcript_response, 'words', [])
         
         for filler in FILLER_WORDS:
             count = 0
@@ -914,6 +931,10 @@ class VideoAnalysisProcessor:
         Returns timestamps where rising intonation suggests a question.
         """
         try:
+            # Handle empty or None word_timestamps
+            if not word_timestamps or len(word_timestamps) == 0:
+                logger.warning("⚠️ No word timestamps available for intonation analysis")
+                return {'question_timestamps': []}
             # Extract pitch (fundamental frequency) using piptrack
             pitches, magnitudes = librosa.piptrack(y=audio_data, sr=sample_rate, threshold=0.1)
             
