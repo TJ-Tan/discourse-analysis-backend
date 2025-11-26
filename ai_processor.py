@@ -176,25 +176,36 @@ class VideoAnalysisProcessor:
             logger.info("📸 Step 5: Extracting sample frames for display...")
             sample_frames = []
             if video_frames:
-                # Select 3-7 evenly spaced frames
-                num_frames_to_extract = min(7, max(3, len(video_frames)))
-                if len(video_frames) > num_frames_to_extract:
-                    # Select evenly spaced frames
-                    step = len(video_frames) // num_frames_to_extract
-                    selected_indices = [i * step for i in range(num_frames_to_extract)]
-                    if selected_indices[-1] >= len(video_frames):
-                        selected_indices[-1] = len(video_frames) - 1
-                else:
-                    selected_indices = list(range(len(video_frames)))
-                
-                # Extract original frames from video for display (maintain aspect ratio)
+                # Get video duration for even distribution
                 cap = cv2.VideoCapture(str(video_path))
                 fps = cap.get(cv2.CAP_PROP_FPS)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration_seconds = total_frames / fps if fps > 0 else 0
                 
-                for idx in selected_indices:
-                    frame_data = video_frames[idx]
-                    frame_number = frame_data.get('frame_number', 0)
-                    timestamp = frame_data.get('timestamp', 0)
+                # Select 3-7 evenly spaced frames across entire video duration
+                num_frames_to_extract = min(7, max(3, len(video_frames)))
+                
+                # Calculate evenly spaced timestamps across entire video duration
+                if duration_seconds > 0 and num_frames_to_extract > 0:
+                    time_interval = duration_seconds / (num_frames_to_extract + 1)  # +1 to avoid first/last frame
+                    selected_timestamps = [time_interval * (i + 1) for i in range(num_frames_to_extract)]
+                else:
+                    # Fallback to frame-based selection if duration unavailable
+                    if len(video_frames) > num_frames_to_extract:
+                        step = len(video_frames) // num_frames_to_extract
+                        selected_indices = [i * step for i in range(num_frames_to_extract)]
+                        if selected_indices[-1] >= len(video_frames):
+                            selected_indices[-1] = len(video_frames) - 1
+                        selected_timestamps = [video_frames[i].get('timestamp', 0) for i in selected_indices]
+                    else:
+                        selected_timestamps = [f.get('timestamp', 0) for f in video_frames]
+                
+                # Extract frames at calculated timestamps
+                for target_timestamp in selected_timestamps:
+                    # Find closest frame to target timestamp
+                    closest_frame = min(video_frames, key=lambda f: abs(f.get('timestamp', 0) - target_timestamp))
+                    frame_number = closest_frame.get('frame_number', 0)
+                    timestamp = closest_frame.get('timestamp', 0)
                     
                     # Seek to the original frame in the video
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
@@ -205,7 +216,9 @@ class VideoAnalysisProcessor:
                         frame = original_frame
                     else:
                         # Fallback to resized frame if original can't be read
-                        frame = frame_data['frame']
+                        frame = closest_frame.get('frame', None)
+                        if frame is None:
+                            continue  # Skip this frame if we can't get it
                     
                     # Convert frame to base64 (maintain original aspect ratio)
                     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -214,7 +227,7 @@ class VideoAnalysisProcessor:
                     sample_frames.append({
                         'image': f"data:image/jpeg;base64,{frame_base64}",
                         'timestamp': round(timestamp, 2),
-                        'frame_number': frame_data.get('frame_number', idx)
+                        'frame_number': closest_frame.get('frame_number', frame_number)
                     })
                 
                 cap.release()
@@ -2148,6 +2161,7 @@ Focus on identifying ALL questions, including those that might be implicit or rh
                 'professionalism': round(visual_analysis.get('scores', {}).get('professionalism', 8), 1),
                 'frames_analyzed': visual_analysis.get('frames_analyzed', 0),
                 'feedback': self.generate_visual_feedback_enhanced(visual_analysis),
+                'remarks': 'Note: Visual analysis accuracy may be limited if the recording does not adequately capture facial expressions and body gestures due to camera angle, distance, or recording style (e.g., presentation slides with voiceover overlay). Results should be interpreted with consideration of these recording constraints.',
                 # Raw metrics
                 'raw_metrics': {
                     'total_frames_extracted': visual_analysis.get('frames_analyzed', 0),
