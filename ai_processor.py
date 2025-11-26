@@ -464,14 +464,15 @@ class VideoAnalysisProcessor:
                 temp_path = temp_file.name
             
             try:
-                # Transcribe chunk
+                # Transcribe chunk with punctuation prompt
                 with open(temp_path, "rb") as chunk_file:
                     chunk_response = openai_client.audio.transcriptions.create(
                         model="whisper-1",
                         file=chunk_file,
                         response_format="verbose_json",
                         timestamp_granularities=["word"],
-                        language="en"  # Force English transcription
+                        language="en",  # Force English transcription
+                        prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
                     )
                 
                 # Adjust timestamps to global time
@@ -604,7 +605,7 @@ class VideoAnalysisProcessor:
                     if chunk_size_mb > 25:
                         logger.warning(f"⚠️ Chunk {chunk_count} is {chunk_size_mb:.1f}MB, may exceed API limit")
                     
-                    # Transcribe chunk with retry logic
+                    # Transcribe chunk with retry logic and punctuation prompt
                     chunk_success = False
                     for api_retry in range(max_retries):
                         try:
@@ -614,7 +615,8 @@ class VideoAnalysisProcessor:
                                     file=chunk_file,
                                     response_format="verbose_json",
                                     timestamp_granularities=["word"],
-                                    language="en"  # Force English transcription
+                                    language="en",  # Force English transcription
+                                    prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
                                 )
                             
                             # Adjust timestamps to global time
@@ -710,14 +712,15 @@ class VideoAnalysisProcessor:
             logger.info("📄 Small audio file, processing directly...")
             await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly (English)...")
             
-            # Process directly with English language enforcement
+            # Process directly with English language enforcement and punctuation prompt
             with open(audio_path, "rb") as audio_file:
                 transcript_response = openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     response_format="verbose_json",
                     timestamp_granularities=["word"],
-                    language="en"  # Force English transcription
+                    language="en",  # Force English transcription
+                    prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
                 )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
@@ -751,6 +754,16 @@ class VideoAnalysisProcessor:
         voice_activity = librosa.effects.split(audio_data, top_db=20)
         speaking_time = sum([(end - start) / sample_rate for start, end in voice_activity])
         speaking_ratio = speaking_time / (len(audio_data) / sample_rate)
+        
+        # Analyze intonation to detect questions (rising pitch at end of sentences)
+        logger.info("🎵 Analyzing intonation patterns for question detection...")
+        await self.progress_callback(self.analysis_id, 44, "🎵 Analyzing intonation patterns for question detection...")
+        intonation_data = self.analyze_intonation_for_questions(audio_data, sample_rate, words_data)
+        
+        # Enhance transcript with punctuation based on intonation
+        if intonation_data and len(intonation_data.get('question_timestamps', [])) > 0:
+            transcript_text = self.enhance_transcript_with_intonation(transcript_text, intonation_data, words_data)
+            logger.info(f"✅ Enhanced transcript with {len(intonation_data.get('question_timestamps', []))} question markers based on intonation")
         
         # Enhanced filler word analysis with timecodes
         text_lower = transcript_text.lower()
@@ -894,6 +907,171 @@ class VideoAnalysisProcessor:
         except Exception as e:
             logger.warning(f"Pause effectiveness calculation failed: {e}")
             return 0.5
+    
+    def analyze_intonation_for_questions(self, audio_data: np.ndarray, sample_rate: int, word_timestamps: List[Dict]) -> Dict[str, Any]:
+        """
+        Analyze intonation patterns to detect questions based on rising pitch at end of sentences.
+        Returns timestamps where rising intonation suggests a question.
+        """
+        try:
+            # Extract pitch (fundamental frequency) using piptrack
+            pitches, magnitudes = librosa.piptrack(y=audio_data, sr=sample_rate, threshold=0.1)
+            
+            # Get time frames for pitch analysis
+            times = librosa.frames_to_time(np.arange(pitches.shape[1]), sr=sample_rate)
+            
+            # Extract pitch values over time
+            pitch_track = []
+            for t in range(pitches.shape[1]):
+                index = magnitudes[:, t].argmax()
+                pitch = pitches[index, t]
+                if pitch > 0:  # Valid pitch detected
+                    pitch_track.append((times[t], pitch))
+                else:
+                    pitch_track.append((times[t], None))
+            
+            if len(pitch_track) < 10:
+                return {'question_timestamps': []}
+            
+            # Find sentence boundaries from word timestamps
+            sentence_end_timestamps = []
+            if word_timestamps:
+                # Group words into sentences (look for pauses > 0.8 seconds or punctuation)
+                current_sentence_end = None
+                for i in range(len(word_timestamps) - 1):
+                    current_word = word_timestamps[i]
+                    next_word = word_timestamps[i + 1]
+                    
+                    word_text = current_word.get('word', '').strip()
+                    pause_duration = next_word.get('start', 0) - current_word.get('end', 0)
+                    
+                    # Check if this word ends with punctuation (from Whisper)
+                    if any(punct in word_text for punct in ['.', '!', '?']):
+                        current_sentence_end = current_word.get('end', 0)
+                        sentence_end_timestamps.append(current_sentence_end)
+                    elif pause_duration > 0.8:  # Long pause suggests sentence end
+                        current_sentence_end = current_word.get('end', 0)
+                        sentence_end_timestamps.append(current_sentence_end)
+                
+                # Add final word as sentence end
+                if word_timestamps:
+                    sentence_end_timestamps.append(word_timestamps[-1].get('end', 0))
+            
+            # Analyze pitch at sentence endings for rising intonation
+            question_timestamps = []
+            window_size = 0.5  # Analyze last 0.5 seconds of each sentence
+            
+            for sentence_end_time in sentence_end_timestamps:
+                # Get pitch values in the window before sentence end
+                window_start = max(0, sentence_end_time - window_size)
+                window_end = sentence_end_time
+                
+                # Extract pitch values in this window
+                window_pitches = []
+                for time, pitch in pitch_track:
+                    if window_start <= time <= window_end and pitch is not None:
+                        window_pitches.append(pitch)
+                
+                if len(window_pitches) < 3:
+                    continue
+                
+                # Check for rising intonation (pitch increases toward end)
+                # Split window into first half and second half
+                mid_point = len(window_pitches) // 2
+                first_half_pitch = np.mean(window_pitches[:mid_point]) if mid_point > 0 else 0
+                second_half_pitch = np.mean(window_pitches[mid_point:]) if len(window_pitches) > mid_point else 0
+                
+                # Rising intonation: second half pitch is significantly higher
+                pitch_rise_ratio = (second_half_pitch - first_half_pitch) / first_half_pitch if first_half_pitch > 0 else 0
+                
+                # Threshold: 15% pitch rise suggests a question
+                if pitch_rise_ratio > 0.15:
+                    question_timestamps.append({
+                        'timestamp': sentence_end_time,
+                        'pitch_rise': pitch_rise_ratio,
+                        'confidence': min(1.0, pitch_rise_ratio / 0.3)  # Normalize to 0-1
+                    })
+            
+            return {
+                'question_timestamps': question_timestamps,
+                'total_sentences': len(sentence_end_timestamps),
+                'questions_detected': len(question_timestamps)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Intonation analysis failed: {e}")
+            return {'question_timestamps': []}
+    
+    def enhance_transcript_with_intonation(self, transcript: str, intonation_data: Dict[str, Any], word_timestamps: List[Dict]) -> str:
+        """
+        Enhance transcript by adding question marks based on intonation analysis.
+        Only adds question marks if they're not already present.
+        """
+        try:
+            if not intonation_data or not intonation_data.get('question_timestamps'):
+                return transcript
+            
+            question_timestamps = intonation_data['question_timestamps']
+            
+            # Create a mapping of timestamps to word positions
+            # Find words near question timestamps and add question marks
+            enhanced_transcript = transcript
+            changes_made = 0
+            
+            # Sort question timestamps by confidence (highest first)
+            sorted_questions = sorted(question_timestamps, key=lambda x: x.get('confidence', 0), reverse=True)
+            
+            # For each detected question, find the corresponding word and add question mark
+            for question_info in sorted_questions:
+                question_time = question_info['timestamp']
+                confidence = question_info.get('confidence', 0)
+                
+                # Only process high-confidence questions (confidence > 0.5)
+                if confidence < 0.5:
+                    continue
+                
+                # Find the word closest to this timestamp
+                closest_word_idx = None
+                min_time_diff = float('inf')
+                
+                for idx, word_data in enumerate(word_timestamps):
+                    word_end = word_data.get('end', 0)
+                    time_diff = abs(word_end - question_time)
+                    if time_diff < min_time_diff:
+                        min_time_diff = time_diff
+                        closest_word_idx = idx
+                
+                if closest_word_idx is not None and min_time_diff < 1.0:  # Within 1 second
+                    word_data = word_timestamps[closest_word_idx]
+                    word_text = word_data.get('word', '').strip()
+                    
+                    # Check if word already has punctuation
+                    if '?' not in word_text and '.' not in word_text and '!' not in word_text:
+                        # Find this word in the transcript and add question mark
+                        # Use regex to find the word at the end of a sentence
+                        word_pattern = re.escape(word_text)
+                        # Look for the word followed by space or end of string
+                        pattern = rf'\b{word_pattern}\b(?=\s|$)'
+                        
+                        # Replace only if not already a question
+                        if re.search(pattern, enhanced_transcript):
+                            # Replace the word with word + question mark
+                            enhanced_transcript = re.sub(
+                                pattern,
+                                lambda m: word_text + '?',
+                                enhanced_transcript,
+                                count=1  # Only replace first occurrence
+                            )
+                            changes_made += 1
+            
+            if changes_made > 0:
+                logger.info(f"✅ Enhanced transcript with {changes_made} question marks based on intonation")
+            
+            return enhanced_transcript
+            
+        except Exception as e:
+            logger.warning(f"Transcript enhancement with intonation failed: {e}")
+            return transcript
     
     async def analyze_content_structure_enhanced(self, transcript: str) -> Dict[str, Any]:
         """
