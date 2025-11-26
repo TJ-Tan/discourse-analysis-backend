@@ -562,9 +562,12 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     # Immediately log initialization
     print(f"🎯 INITIALIZED with {len(analysis_results[analysis_id]['log_messages'])} messages")
     
-    # Add initial log message
+    # Add initial log message with Singapore time
+    import pytz
+    singapore_tz = pytz.timezone('Asia/Singapore')
+    singapore_time = datetime.now().astimezone(singapore_tz)
     analysis_results[analysis_id]["log_messages"].append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": singapore_time.isoformat(),
         "message": "File uploaded successfully. Starting enhanced AI analysis...",
         "progress": 5
     })
@@ -621,8 +624,11 @@ async def stop_analysis(analysis_id: str):
         analysis_results[analysis_id]["status"] = "stopped"
         analysis_results[analysis_id]["message"] = "Analysis stopped by user"
         
-        # Store the stop request timestamp
-        analysis_results[analysis_id]["stopped_at"] = datetime.now().isoformat()
+        # Store the stop request timestamp with Singapore time
+        import pytz
+        singapore_tz = pytz.timezone('Asia/Singapore')
+        singapore_time = datetime.now().astimezone(singapore_tz)
+        analysis_results[analysis_id]["stopped_at"] = singapore_time.isoformat()
         
         # If there's a running process, mark it for termination
         if analysis_id in running_processes:
@@ -883,7 +889,11 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         # print(f"✅ Progress: [{progress}%] {message}")
         
         # Force immediate update by adding a timestamp and counter to trigger SSE
-        analysis_results[analysis_id]["last_update"] = current_time.isoformat()
+        # Convert to Singapore time
+        import pytz
+        singapore_tz = pytz.timezone('Asia/Singapore')
+        singapore_time = current_time.astimezone(singapore_tz)
+        analysis_results[analysis_id]["last_update"] = singapore_time.isoformat()
         analysis_results[analysis_id]["update_counter"] = analysis_results[analysis_id].get("update_counter", 0) + 1
         
         # Add a small delay to ensure the update is processed by SSE
@@ -905,13 +915,15 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
     Process video analysis using real AI services with detailed step tracking
     """
+    import pytz
     try:
         print(f"🚀 BACKGROUND TASK STARTED for {analysis_id}")
         
         # Register this process for potential stopping
+        singapore_tz = pytz.timezone('Asia/Singapore')
         running_processes[analysis_id] = {
             "should_stop": False,
-            "started_at": datetime.now().isoformat()
+            "started_at": datetime.now().astimezone(singapore_tz).isoformat()
         }
         
         # Simple progress callback that updates state directly and checks for stop
