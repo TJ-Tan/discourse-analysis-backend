@@ -327,6 +327,27 @@ def get_queue_status():
     active_jobs = len([pid for pid in running_processes.keys() if analysis_results.get(pid, {}).get('status') == 'processing'])
     queued_jobs = len(job_queue)
     
+    # Collect IP addresses of active and queued users
+    active_ips = []
+    queued_ips = []
+    
+    # Get IPs from currently processing jobs
+    for analysis_id, result in analysis_results.items():
+        if result.get('status') == 'processing':
+            ip = result.get('client_ip', 'Unknown')
+            if ip and ip != 'Unknown':
+                active_ips.append(ip)
+    
+    # Get IPs from queued jobs
+    for job in job_queue:
+        ip = job.get('client_ip', 'Unknown')
+        if ip and ip != 'Unknown':
+            queued_ips.append(ip)
+    
+    # Total unique users (active + queued)
+    all_ips = list(set(active_ips + queued_ips))
+    total_users = len(all_ips)
+    
     # Estimate wait time based on current job progress
     estimated_wait_minutes = 0
     current_job_progress = 0
@@ -368,7 +389,11 @@ def get_queue_status():
         "can_start_immediately": active_jobs < MAX_CONCURRENT_JOBS,
         "warning_level": warning_level,
         "warning_message": warning_message,
-        "current_job_progress": current_job_progress
+        "current_job_progress": current_job_progress,
+        "active_ips": active_ips,
+        "queued_ips": queued_ips,
+        "total_users": total_users,
+        "all_ips": all_ips
     }
 
 @app.get("/queue-status")
