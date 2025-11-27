@@ -70,3 +70,4 @@ cd ../frontend && git add src/App.js && git commit -m "Update proper nouns list"
 
 For detailed instructions, see `UPDATE_PROPER_NOUNS_GUIDE.md`
 
+
