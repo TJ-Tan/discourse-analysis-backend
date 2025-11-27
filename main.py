@@ -320,31 +320,32 @@ async def reset_configuration():
 async def upload_video_options():
     return {"message": "OK"}
 
-def get_queue_status():
+def get_queue_status(current_user_ip: str = None):
     """
     Get current queue status and estimated wait time with concurrent user warnings
+    Filters out the current user's IP to avoid false warnings
     """
     active_jobs = len([pid for pid in running_processes.keys() if analysis_results.get(pid, {}).get('status') == 'processing'])
     queued_jobs = len(job_queue)
     
-    # Collect IP addresses of active and queued users
+    # Collect IP addresses of active and queued users (excluding current user)
     active_ips = []
     queued_ips = []
     
-    # Get IPs from currently processing jobs
+    # Get IPs from currently processing jobs (excluding current user)
     for analysis_id, result in analysis_results.items():
         if result.get('status') == 'processing':
             ip = result.get('client_ip', 'Unknown')
-            if ip and ip != 'Unknown':
+            if ip and ip != 'Unknown' and ip != current_user_ip:
                 active_ips.append(ip)
     
-    # Get IPs from queued jobs
+    # Get IPs from queued jobs (excluding current user)
     for job in job_queue:
         ip = job.get('client_ip', 'Unknown')
-        if ip and ip != 'Unknown':
+        if ip and ip != 'Unknown' and ip != current_user_ip:
             queued_ips.append(ip)
     
-    # Total unique users (active + queued)
+    # Total unique users (active + queued, excluding current user)
     all_ips = list(set(active_ips + queued_ips))
     total_users = len(all_ips)
     
@@ -368,17 +369,18 @@ def get_queue_status():
     # Add time for queued jobs (assume 12 minutes per job)
     estimated_wait_minutes += queued_jobs * 12
     
-    # Determine warning level
+    # Determine warning level (only if there are OTHER users, not the current user)
     warning_level = "none"
     warning_message = ""
     
-    if active_jobs > 0 and current_job_progress < 50:
+    # Only show warnings if there are OTHER users (not counting current user's own jobs)
+    if len(active_ips) > 0 and current_job_progress < 50:
         warning_level = "high"
         warning_message = "⚠️ Another user is currently processing a video. Processing will be very slow. We recommend waiting and trying again later."
-    elif active_jobs > 0 and current_job_progress < 80:
+    elif len(active_ips) > 0 and current_job_progress < 80:
         warning_level = "medium"
         warning_message = "⚠️ Another user is processing a video. Processing may be slower than usual."
-    elif queued_jobs > 0:
+    elif len(queued_ips) > 0:
         warning_level = "low"
         warning_message = "ℹ️ There are videos in the queue. Processing may take longer than usual."
     
@@ -397,11 +399,26 @@ def get_queue_status():
     }
 
 @app.get("/queue-status")
-async def queue_status():
+async def queue_status(request: Request, current_user_ip: Optional[str] = None):
     """
     Get current queue status and estimated wait time
+    Filters out the current user's IP to avoid false warnings
     """
-    status = get_queue_status()
+    # Get client IP from request if not provided as query parameter
+    if not current_user_ip:
+        current_user_ip = request.client.host if request.client else None
+        # Try to get real IP from headers (for proxies/load balancers)
+        if "x-forwarded-for" in request.headers:
+            current_user_ip = request.headers["x-forwarded-for"].split(",")[0].strip()
+        elif "x-real-ip" in request.headers:
+            current_user_ip = request.headers["x-real-ip"]
+    
+    # Also check query parameter for client IP (frontend can pass it)
+    query_ip = request.query_params.get("client_ip")
+    if query_ip:
+        current_user_ip = query_ip
+    
+    status = get_queue_status(current_user_ip)
     # Add explicit CORS headers as backup
     response = JSONResponse(content=status)
     response.headers["Access-Control-Allow-Origin"] = "*"
