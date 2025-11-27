@@ -464,15 +464,14 @@ class VideoAnalysisProcessor:
                 temp_path = temp_file.name
             
             try:
-                # Transcribe chunk with punctuation prompt
+                # Transcribe chunk (raw transcription, no punctuation prompt)
                 with open(temp_path, "rb") as chunk_file:
                     chunk_response = openai_client.audio.transcriptions.create(
                         model="whisper-1",
                         file=chunk_file,
                         response_format="verbose_json",
                         timestamp_granularities=["word"],
-                        language="en",  # Force English transcription
-                        prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
+                        language="en"  # Force English transcription (no punctuation prompt - get raw text)
                     )
                 
                 # Adjust timestamps to global time
@@ -605,7 +604,7 @@ class VideoAnalysisProcessor:
                     if chunk_size_mb > 25:
                         logger.warning(f"⚠️ Chunk {chunk_count} is {chunk_size_mb:.1f}MB, may exceed API limit")
                     
-                    # Transcribe chunk with retry logic and punctuation prompt
+                    # Transcribe chunk with retry logic (raw transcription, no punctuation prompt)
                     chunk_success = False
                     for api_retry in range(max_retries):
                         try:
@@ -615,8 +614,7 @@ class VideoAnalysisProcessor:
                                     file=chunk_file,
                                     response_format="verbose_json",
                                     timestamp_granularities=["word"],
-                                    language="en",  # Force English transcription
-                                    prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
+                                    language="en"  # Force English transcription (no punctuation prompt - get raw text)
                                 )
                             
                             # Adjust timestamps to global time
@@ -712,15 +710,14 @@ class VideoAnalysisProcessor:
             logger.info("📄 Small audio file, processing directly...")
             await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly (English)...")
             
-            # Process directly with English language enforcement and punctuation prompt
+            # Process directly with English language enforcement (raw transcription, no punctuation prompt)
             with open(audio_path, "rb") as audio_file:
                 transcript_response = openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
                     response_format="verbose_json",
                     timestamp_granularities=["word"],
-                    language="en",  # Force English transcription
-                    prompt="This is a lecture transcript. Please add proper punctuation including commas, periods, question marks, and exclamation marks. Use question marks for questions based on intonation and sentence structure."  # Encourage punctuation
+                    language="en"  # Force English transcription (no punctuation prompt - get raw text)
                 )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
@@ -734,6 +731,12 @@ class VideoAnalysisProcessor:
         logger.info(f"📄 Transcript preview: {preview}")
         
         await self.progress_callback(self.analysis_id, 42, f"📝 Full transcript length: {len(transcript_text)} characters")
+        
+        # Post-process transcript with GPT-4o-mini for punctuation and sentence segmentation
+        logger.info("📝 Post-processing transcript with GPT-4o-mini for punctuation and sentence segmentation...")
+        await self.progress_callback(self.analysis_id, 42.5, "📝 Post-processing transcript for proper punctuation and sentence segmentation...")
+        transcript_text = await self.post_process_transcript_with_gpt(transcript_text)
+        logger.info("✅ Transcript post-processing complete")
         
         # Get word-level data early (needed for intonation analysis)
         # Handle both single response and chunked responses (CombinedResponse)
@@ -775,16 +778,7 @@ class VideoAnalysisProcessor:
         speaking_time = sum([(end - start) / sample_rate for start, end in voice_activity])
         speaking_ratio = speaking_time / (len(audio_data) / sample_rate)
         
-        # Analyze intonation to detect questions (rising pitch at end of sentences)
-        logger.info("🎵 Analyzing intonation patterns for question detection...")
-        await self.progress_callback(self.analysis_id, 44, "🎵 Analyzing intonation patterns for question detection...")
-        intonation_data = self.analyze_intonation_for_questions(audio_data, sample_rate, words_data)
-        
-        # Enhance transcript with punctuation based on intonation
-        if intonation_data and len(intonation_data.get('question_timestamps', [])) > 0:
-            transcript_text = self.enhance_transcript_with_intonation(transcript_text, intonation_data, words_data)
-            logger.info(f"✅ Enhanced transcript with {len(intonation_data.get('question_timestamps', []))} question markers based on intonation")
-        
+        # Note: Intonation analysis removed - GPT post-processing handles punctuation better
         # Enhanced filler word analysis with timecodes
         text_lower = transcript_text.lower()
         filler_count = 0
@@ -924,6 +918,84 @@ class VideoAnalysisProcessor:
         except Exception as e:
             logger.warning(f"Pause effectiveness calculation failed: {e}")
             return 0.5
+    
+    async def post_process_transcript_with_gpt(self, raw_transcript: str) -> str:
+        """
+        Post-process raw Whisper transcript with GPT-4o-mini to:
+        - Add proper punctuation (commas, periods, question marks)
+        - Segment into natural sentences
+        - Preserve original meaning
+        - Do not rewrite or improve wording
+        """
+        try:
+            # Split transcript into chunks if too long (GPT-4o-mini has token limits)
+            max_chunk_length = 8000  # Conservative limit to leave room for prompt and response
+            chunks = []
+            
+            if len(raw_transcript) <= max_chunk_length:
+                chunks = [raw_transcript]
+            else:
+                # Split by approximate word count (roughly 5 chars per word)
+                words = raw_transcript.split()
+                words_per_chunk = max_chunk_length // 5
+                
+                for i in range(0, len(words), words_per_chunk):
+                    chunk = ' '.join(words[i:i + words_per_chunk])
+                    chunks.append(chunk)
+            
+            processed_chunks = []
+            
+            for idx, chunk in enumerate(chunks):
+                if len(chunks) > 1:
+                    logger.info(f"📝 Processing transcript chunk {idx + 1}/{len(chunks)}...")
+                
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """You are a transcript post-processing assistant. Your task is to add proper punctuation and segment sentences in a raw transcript.
+
+IMPORTANT RULES:
+1. Add proper punctuation: commas, periods, question marks, exclamation marks
+2. Segment into natural sentences (each sentence should start with a capital letter)
+3. Preserve the original meaning exactly - do not rewrite or improve wording
+4. Do not add or remove words
+5. Do not change the order of words
+6. Only add punctuation and capitalization
+7. Use question marks (?) only for actual questions (not for words like "what" or "why" in the middle of statements)
+8. Maintain the original vocabulary and phrasing"""
+                        },
+                        {
+                            "role": "user",
+                            "content": f"""Please add proper punctuation and segment this raw transcript into natural sentences. Preserve the exact wording and meaning - only add punctuation and capitalization.
+
+Raw transcript:
+{chunk}
+
+Return only the processed transcript with proper punctuation and sentence segmentation. Do not include any explanations or additional text."""
+                        }
+                    ],
+                    temperature=0.1,  # Low temperature for consistency
+                    max_tokens=4000
+                )
+                
+                if response.choices and response.choices[0].message.content:
+                    processed_chunk = response.choices[0].message.content.strip()
+                    processed_chunks.append(processed_chunk)
+                else:
+                    logger.warning(f"⚠️ GPT post-processing returned empty response for chunk {idx + 1}, using original")
+                    processed_chunks.append(chunk)
+            
+            # Combine processed chunks
+            processed_transcript = ' '.join(processed_chunks)
+            
+            logger.info(f"✅ Post-processed transcript: {len(processed_transcript)} characters (original: {len(raw_transcript)} characters)")
+            return processed_transcript
+            
+        except Exception as e:
+            logger.warning(f"⚠️ GPT post-processing failed: {e}. Using original transcript.")
+            return raw_transcript
     
     def analyze_intonation_for_questions(self, audio_data: np.ndarray, sample_rate: int, word_timestamps: List[Dict]) -> Dict[str, Any]:
         """
@@ -1451,97 +1523,141 @@ class VideoAnalysisProcessor:
             }
         
 
-    def detect_questions_pattern_matching(self, words_data: List[Dict]) -> List[Dict]:
+    def detect_questions_pattern_matching(self, words_data: List[Dict], transcript_text: str = "") -> List[Dict]:
         """
         Use pattern matching to detect potential questions from word timestamps
-        This provides a first-pass filter before AI analysis
+        IMPORTANT: Only detect questions at sentence boundaries (after punctuation)
+        This prevents false positives from question words in the middle of sentences
         """
         if not words_data:
             return []
         
-        # Question words that typically start questions
-        question_starters = [
-            'what', 'why', 'how', 'when', 'where', 'who', 'which', 'whose', 'whom',
-            'can', 'could', 'would', 'should', 'will', 'may', 'might', 'do', 'does', 'did',
-            'is', 'are', 'was', 'were', 'am', 'have', 'has', 'had'
-        ]
-        
-        # Question patterns (phrases that indicate questions)
+        # Question patterns (phrases that indicate questions) - more specific patterns
         question_patterns = [
-            'what if', 'what about', 'what do you', 'what would', 'what should',
-            'why do', 'why would', 'why should', 'why don\'t', 'why doesn\'t',
-            'how do', 'how would', 'how should', 'how can', 'how could',
+            'what if', 'what about', 'what do you', 'what would', 'what should', 'what is', 'what are',
+            'why do', 'why would', 'why should', 'why don\'t', 'why doesn\'t', 'why is', 'why are',
+            'how do', 'how would', 'how should', 'how can', 'how could', 'how is', 'how are',
             'can you', 'could you', 'would you', 'should we', 'will you',
             'do you', 'does anyone', 'did you', 'have you', 'has anyone',
             'let\'s', 'let us', 'turn to', 'can someone', 'does someone',
-            'any questions', 'anyone know', 'any thoughts', 'any ideas'
+            'any questions', 'anyone know', 'any thoughts', 'any ideas', 'anyone have'
         ]
         
         detected_questions = []
-        i = 0
         
-        while i < len(words_data):
-            word = words_data[i].get('word', '').lower().strip()
-            start_time = words_data[i].get('start', 0)
+        # If we have transcript text with punctuation, use it to find sentence boundaries
+        if transcript_text:
+            # Split transcript into sentences using punctuation
+            import re
+            # Split by sentence-ending punctuation followed by space and capital letter
+            sentences = re.split(r'([.!?]\s+[A-Z])', transcript_text)
             
-            # Check if word starts with a question starter
-            is_question_start = word in question_starters
+            # Reconstruct sentences
+            sentence_list = []
+            for i in range(0, len(sentences) - 1, 2):
+                if i + 1 < len(sentences):
+                    sentence = sentences[i] + sentences[i + 1]
+                    sentence_list.append(sentence.strip())
+                else:
+                    sentence_list.append(sentences[i].strip())
             
-            # Check for question patterns (2-3 word windows)
-            is_question_pattern = False
-            question_text = ''
-            question_end_idx = i
-            
-            if i < len(words_data) - 1:
-                # Check 2-word patterns
-                two_word = f"{word} {words_data[i+1].get('word', '').lower()}".strip()
-                if any(pattern in two_word for pattern in question_patterns):
-                    is_question_pattern = True
-                    question_end_idx = min(i + 15, len(words_data))  # Capture up to 15 words
-                    question_words = [words_data[j].get('word', '') for j in range(i, question_end_idx)]
-                    question_text = ' '.join(question_words)
-            
-            if i < len(words_data) - 2:
-                # Check 3-word patterns
-                three_word = f"{word} {words_data[i+1].get('word', '').lower()} {words_data[i+2].get('word', '').lower()}".strip()
-                if any(pattern in three_word for pattern in question_patterns):
-                    is_question_pattern = True
-                    question_end_idx = min(i + 15, len(words_data))
-                    question_words = [words_data[j].get('word', '') for j in range(i, question_end_idx)]
-                    question_text = ' '.join(question_words)
-            
-            # Detect sentence structure: question word at start + verb inversion or question structure
-            if is_question_start or is_question_pattern:
-                # Capture the full sentence/question (up to 20 words or until sentence end)
-                sentence_end = i
-                for j in range(i, min(i + 25, len(words_data))):
-                    sentence_end = j
-                    next_word = words_data[j].get('word', '').lower()
-                    # Stop at common sentence endings (if we detect pauses or sentence boundaries)
-                    # We'll use a simple heuristic: stop after 20 words or if we see certain patterns
-                    if j > i + 20:
-                        break
+            # Only check sentences that end with '?' or start with question patterns
+            for sentence in sentence_list:
+                sentence_lower = sentence.lower().strip()
                 
-                # Extract the question text
-                if not question_text:
-                    question_words = [words_data[j].get('word', '') for j in range(i, min(sentence_end + 1, len(words_data)))]
-                    question_text = ' '.join(question_words)
+                # Check if sentence ends with question mark
+                if sentence.strip().endswith('?'):
+                    # Find the corresponding word timestamps for this sentence
+                    # This is approximate - we'll match by finding words in the sentence
+                    sentence_words = sentence.split()
+                    if len(sentence_words) >= 3:  # Only substantial questions
+                        # Try to find start time by matching first few words
+                        for i in range(len(words_data) - len(sentence_words) + 1):
+                            window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + 5, len(words_data)))]
+                            window_text = ' '.join(window_words)
+                            
+                            if sentence_words[0].lower() in window_text and sentence_words[1].lower() in window_text:
+                                detected_questions.append({
+                                    'question': sentence.strip(),
+                                    'start_time': words_data[i].get('start', 0),
+                                    'start_idx': i,
+                                    'end_idx': min(i + len(sentence_words), len(words_data)),
+                                    'confidence': 'high',
+                                    'detection_method': 'punctuation_based'
+                                })
+                                break
                 
-                # Only add if it's a substantial question (at least 3 words)
-                if len(question_text.split()) >= 3:
-                    detected_questions.append({
-                        'question': question_text.strip(),
-                        'start_time': start_time,
-                        'start_idx': i,
-                        'end_idx': min(sentence_end + 1, len(words_data)),
-                        'confidence': 'high' if is_question_pattern else 'medium',
-                        'detection_method': 'pattern_matching'
-                    })
-                    # Skip ahead to avoid overlapping detections
-                    i = sentence_end + 1
-                    continue
-            
-            i += 1
+                # Check if sentence starts with question pattern (even without ?)
+                elif any(sentence_lower.startswith(pattern) for pattern in question_patterns):
+                    sentence_words = sentence.split()
+                    if len(sentence_words) >= 3:
+                        # Try to find start time
+                        for i in range(len(words_data) - len(sentence_words) + 1):
+                            window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + 3, len(words_data)))]
+                            window_text = ' '.join(window_words)
+                            
+                            if sentence_words[0].lower() in window_text:
+                                detected_questions.append({
+                                    'question': sentence.strip(),
+                                    'start_time': words_data[i].get('start', 0),
+                                    'start_idx': i,
+                                    'end_idx': min(i + len(sentence_words), len(words_data)),
+                                    'confidence': 'medium',
+                                    'detection_method': 'pattern_at_sentence_start'
+                                })
+                                break
+        
+        # Fallback: If no transcript text, use original pattern matching but only at sentence boundaries
+        # (detect pauses > 0.8 seconds as sentence boundaries)
+        if not detected_questions and words_data:
+            i = 0
+            while i < len(words_data):
+                # Check if this is likely a sentence start (after a pause or at beginning)
+                is_sentence_start = (i == 0)
+                if i > 0:
+                    prev_end = words_data[i-1].get('end', 0)
+                    curr_start = words_data[i].get('start', 0)
+                    pause_duration = curr_start - prev_end
+                    if pause_duration > 0.8:  # Long pause indicates sentence boundary
+                        is_sentence_start = True
+                
+                if is_sentence_start:
+                    word = words_data[i].get('word', '').lower().strip()
+                    start_time = words_data[i].get('start', 0)
+                    
+                    # Check for question patterns at sentence start (2-3 word windows)
+                    is_question_pattern = False
+                    question_text = ''
+                    
+                    if i < len(words_data) - 1:
+                        two_word = f"{word} {words_data[i+1].get('word', '').lower()}".strip()
+                        if any(pattern in two_word for pattern in question_patterns):
+                            is_question_pattern = True
+                            # Capture up to 20 words or until next sentence boundary
+                            end_idx = i + 1
+                            for j in range(i + 2, min(i + 20, len(words_data))):
+                                if j > 0:
+                                    pause = words_data[j].get('start', 0) - words_data[j-1].get('end', 0)
+                                    if pause > 0.8:  # Sentence boundary
+                                        break
+                                end_idx = j
+                            
+                            question_words = [words_data[j].get('word', '') for j in range(i, end_idx + 1)]
+                            question_text = ' '.join(question_words)
+                    
+                    if is_question_pattern and len(question_text.split()) >= 3:
+                        detected_questions.append({
+                            'question': question_text.strip(),
+                            'start_time': start_time,
+                            'start_idx': i,
+                            'end_idx': end_idx + 1,
+                            'confidence': 'high',
+                            'detection_method': 'pattern_at_sentence_boundary'
+                        })
+                        i = end_idx + 1
+                        continue
+                
+                i += 1
         
         return detected_questions
 
@@ -1553,8 +1669,8 @@ class VideoAnalysisProcessor:
         transcript = speech_analysis.get('transcript', '')
         words_data = speech_analysis.get('word_timestamps', [])
         
-        # Step 1: Pattern matching to detect potential questions
-        pattern_matched_questions = self.detect_questions_pattern_matching(words_data)
+        # Step 1: Pattern matching to detect potential questions (only at sentence boundaries)
+        pattern_matched_questions = self.detect_questions_pattern_matching(words_data, transcript)
         
         # Step 2: Prepare context for AI with pattern-matched questions as hints
         pattern_questions_text = ""
@@ -1571,9 +1687,11 @@ class VideoAnalysisProcessor:
                     "role": "system",
                     "content": """You are an expert in educational interaction analysis. Your task is to identify questions and interaction moments in lecture transcripts.
 
-IMPORTANT: The transcript has NO punctuation marks (no question marks, periods, etc.). You must identify questions based on:
-1. Sentence structure (question words: what, why, how, when, where, who, which, can, could, would, should, do, does, did, is, are, was, were, have, has)
-2. Semantic meaning and intent (even if not explicitly structured as questions)
+IMPORTANT: The transcript has been post-processed with proper punctuation. You should:
+1. Focus on sentences that end with question marks (?)
+2. Only identify complete questions (not statements with question words in the middle)
+3. Consider semantic meaning and intent for sentences that are clearly questions but may lack punctuation
+4. Do NOT identify questions based solely on question words (what, why, how, etc.) if they appear in the middle of statements
 3. Interaction patterns (e.g., "Let's hear from...", "Can someone...", "Turn to your partner...")
 4. Cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...", "Think about...")
 
@@ -1587,7 +1705,12 @@ For each interaction, provide the approximate timestamp and classify the type.""
                 },
                 {
                     "role": "user",
-                    "content": f"""Analyze this lecture transcript for interaction and questioning. The transcript has NO punctuation, so identify questions by structure and meaning.
+                    "content": f"""Analyze this lecture transcript for interaction and questioning. The transcript has been post-processed with proper punctuation and sentence segmentation.
+
+IMPORTANT: Only identify questions that:
+1. End with a question mark (?)
+2. Are complete sentences (not fragments)
+3. Are actual questions (not statements with question words in the middle)
 
 Transcript:
 {transcript[:6000]}{'...' if len(transcript) > 6000 else ''}
