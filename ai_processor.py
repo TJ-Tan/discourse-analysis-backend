@@ -332,68 +332,68 @@ class VideoAnalysisProcessor:
     def extract_timecoded_transcript(self, words_data: List[Dict]) -> List[Dict]:
         """
         Extract transcript with word-level timecodes
-        Groups words into 100-120 character segments with timestamps
-        Ensures sentences start with capital letters
+        Groups words by sentences - each sentence starts with a new timecode
+        Uses punctuation marks (. ! ?) to identify sentence boundaries
         """
         timecoded_transcript = []
-        is_new_sentence = True
-        current_segment = []
-        current_segment_length = 0
-        segment_start_time = None
+        current_sentence = []
+        sentence_start_time = None
         
         for word_data in words_data:
             word = word_data.get('word', '')
             word_start = word_data.get('start', 0)
             
-            # Capitalize first letter of word if it's the start of a new sentence
-            if is_new_sentence and word:
-                word = word[0].upper() + word[1:] if len(word) > 1 else word.upper()
-                is_new_sentence = False
-                # Set segment start time for new sentence
-                if segment_start_time is None:
-                    segment_start_time = word_start
+            # If this is the start of a new sentence, set the sentence start time
+            if sentence_start_time is None:
+                sentence_start_time = word_start
             
-            # Check if this word ends a sentence (period, exclamation, question mark)
-            if word and word[-1] in ['.', '!', '?']:
-                is_new_sentence = True
-            
-            # Calculate word length (including space before it)
-            word_length = len(word) + (1 if current_segment_length > 0 else 0)  # Add space if not first word
-            
-            # If adding this word would exceed 120 characters, finalize current segment
-            if current_segment_length + word_length > 120 and current_segment_length >= 100:
-                # Assign timestamp to all words in current segment
-                segment_timestamp = self.format_timestamp(segment_start_time)
-                for segment_word_data in current_segment:
-                    timecoded_transcript.append({
-                        'word': segment_word_data['word'],
-                        'start': round(segment_word_data['start'], 2),
-                        'end': round(segment_word_data['end'], 2),
-                        'timestamp': segment_timestamp
-                    })
-                
-                # Start new segment
-                current_segment = []
-                current_segment_length = 0
-                segment_start_time = word_start
-            
-            # Add word to current segment
-            current_segment.append({
+            # Add word to current sentence
+            current_sentence.append({
                 'word': word,
                 'start': word_start,
                 'end': word_data.get('end', 0)
             })
-            current_segment_length += word_length
+            
+            # Check if this word ends a sentence (period, exclamation, question mark)
+            # Also check if word contains punctuation (Whisper might attach punctuation to words)
+            sentence_ended = False
+            if word:
+                # Check if word ends with sentence-ending punctuation
+                if word[-1] in ['.', '!', '?']:
+                    sentence_ended = True
+                # Also check if punctuation is attached (e.g., "word." or "word?")
+                elif any(punct in word for punct in ['.', '!', '?']):
+                    # Find the last punctuation mark
+                    for punct in ['.', '!', '?']:
+                        if punct in word:
+                            sentence_ended = True
+                            break
+            
+            # If sentence ended, finalize current sentence and start new one
+            if sentence_ended and current_sentence:
+                # Assign timestamp to all words in current sentence
+                sentence_timestamp = self.format_timestamp(sentence_start_time)
+                for sentence_word_data in current_sentence:
+                    timecoded_transcript.append({
+                        'word': sentence_word_data['word'],
+                        'start': round(sentence_word_data['start'], 2),
+                        'end': round(sentence_word_data['end'], 2),
+                        'timestamp': sentence_timestamp
+                    })
+                
+                # Start new sentence
+                current_sentence = []
+                sentence_start_time = None  # Will be set on next word
         
-        # Add remaining words in final segment
-        if current_segment:
-            segment_timestamp = self.format_timestamp(segment_start_time) if segment_start_time is not None else self.format_timestamp(0)
-            for segment_word_data in current_segment:
+        # Add remaining words in final sentence (if any)
+        if current_sentence:
+            sentence_timestamp = self.format_timestamp(sentence_start_time) if sentence_start_time is not None else self.format_timestamp(0)
+            for sentence_word_data in current_sentence:
                 timecoded_transcript.append({
-                    'word': segment_word_data['word'],
-                    'start': round(segment_word_data['start'], 2),
-                    'end': round(segment_word_data['end'], 2),
-                    'timestamp': segment_timestamp
+                    'word': sentence_word_data['word'],
+                    'start': round(sentence_word_data['start'], 2),
+                    'end': round(sentence_word_data['end'], 2),
+                    'timestamp': sentence_timestamp
                 })
         
         return timecoded_transcript
