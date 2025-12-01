@@ -24,7 +24,7 @@ class MetricConfig:
 # Global Analysis Configuration
 ANALYSIS_CONFIG = {
     "sampling": {
-        "frame_interval_seconds": 6,      # Every 6 seconds (increased frequency)
+        "frame_interval_seconds": 30,     # Every 30 seconds
         "max_frames_analyzed": 100,       # Increased from 10 to 100
         "audio_window_seconds": 30,       # For rate analysis windows
         "transcript_char_limit": None,    # Use full transcript (was 3000)
