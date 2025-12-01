@@ -1525,140 +1525,144 @@ Return only the processed transcript with proper punctuation and sentence segmen
 
     def detect_questions_pattern_matching(self, words_data: List[Dict], transcript_text: str = "") -> List[Dict]:
         """
-        Use pattern matching to detect potential questions from word timestamps
-        IMPORTANT: Only detect questions at sentence boundaries (after punctuation)
-        This prevents false positives from question words in the middle of sentences
-        """
-        if not words_data:
-            return []
+        Detect questions from polished transcript using pattern matching.
+        Uses polished transcript (with proper punctuation from GPT post-processing).
         
-        # Question patterns (phrases that indicate questions) - more specific patterns
-        question_patterns = [
-            'what if', 'what about', 'what do you', 'what would', 'what should', 'what is', 'what are',
-            'why do', 'why would', 'why should', 'why don\'t', 'why doesn\'t', 'why is', 'why are',
-            'how do', 'how would', 'how should', 'how can', 'how could', 'how is', 'how are',
-            'can you', 'could you', 'would you', 'should we', 'will you',
-            'do you', 'does anyone', 'did you', 'have you', 'has anyone',
-            'let\'s', 'let us', 'turn to', 'can someone', 'does someone',
-            'any questions', 'anyone know', 'any thoughts', 'any ideas', 'anyone have'
-        ]
+        Criteria for a valid question:
+        1. Must end with a question mark (?)
+        2. Must start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, etc.)
+        3. Must be a complete sentence (starts with capital letter, minimum 3 words)
+        4. Must not be a fragment or incomplete thought
+        """
+        if not transcript_text:
+            logger.warning("⚠️ No polished transcript text provided for question detection")
+            return []
         
         detected_questions = []
         
-        # If we have transcript text with punctuation, use it to find sentence boundaries
-        if transcript_text:
-            # Split transcript into sentences using punctuation
-            import re
-            # Split by sentence-ending punctuation followed by space and capital letter
-            sentences = re.split(r'([.!?]\s+[A-Z])', transcript_text)
-            
-            # Reconstruct sentences
-            sentence_list = []
-            for i in range(0, len(sentences) - 1, 2):
-                if i + 1 < len(sentences):
-                    sentence = sentences[i] + sentences[i + 1]
-                    sentence_list.append(sentence.strip())
-                else:
-                    sentence_list.append(sentences[i].strip())
-            
-            # Only check sentences that end with '?' or start with question patterns
-            for sentence in sentence_list:
-                sentence_lower = sentence.lower().strip()
-                
-                # Check if sentence ends with question mark
-                if sentence.strip().endswith('?'):
-                    # Find the corresponding word timestamps for this sentence
-                    # This is approximate - we'll match by finding words in the sentence
-                    sentence_words = sentence.split()
-                    if len(sentence_words) >= 3:  # Only substantial questions
-                        # Try to find start time by matching first few words
-                        for i in range(len(words_data) - len(sentence_words) + 1):
-                            window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + 5, len(words_data)))]
-                            window_text = ' '.join(window_words)
-                            
-                            if sentence_words[0].lower() in window_text and sentence_words[1].lower() in window_text:
-                                detected_questions.append({
-                                    'question': sentence.strip(),
-                                    'start_time': words_data[i].get('start', 0),
-                                    'start_idx': i,
-                                    'end_idx': min(i + len(sentence_words), len(words_data)),
-                                    'confidence': 'high',
-                                    'detection_method': 'punctuation_based'
-                                })
-                                break
-                
-                # Check if sentence starts with question pattern (even without ?)
-                elif any(sentence_lower.startswith(pattern) for pattern in question_patterns):
-                    sentence_words = sentence.split()
-                    if len(sentence_words) >= 3:
-                        # Try to find start time
-                        for i in range(len(words_data) - len(sentence_words) + 1):
-                            window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + 3, len(words_data)))]
-                            window_text = ' '.join(window_words)
-                            
-                            if sentence_words[0].lower() in window_text:
-                                detected_questions.append({
-                                    'question': sentence.strip(),
-                                    'start_time': words_data[i].get('start', 0),
-                                    'start_idx': i,
-                                    'end_idx': min(i + len(sentence_words), len(words_data)),
-                                    'confidence': 'medium',
-                                    'detection_method': 'pattern_at_sentence_start'
-                                })
-                                break
+        # Question words that indicate a question (at sentence start)
+        question_start_words = [
+            'why', 'what', 'how', 'can', 'could', 'would', 'should', 'will',
+            'do', 'does', 'did', 'is', 'are', 'was', 'were', 'am', 'have', 'has', 'had',
+            'who', 'whom', 'whose', 'where', 'when', 'which'
+        ]
         
-        # Fallback: If no transcript text, use original pattern matching but only at sentence boundaries
-        # (detect pauses > 0.8 seconds as sentence boundaries)
-        if not detected_questions and words_data:
-            i = 0
-            while i < len(words_data):
-                # Check if this is likely a sentence start (after a pause or at beginning)
-                is_sentence_start = (i == 0)
-                if i > 0:
-                    prev_end = words_data[i-1].get('end', 0)
-                    curr_start = words_data[i].get('start', 0)
-                    pause_duration = curr_start - prev_end
-                    if pause_duration > 0.8:  # Long pause indicates sentence boundary
-                        is_sentence_start = True
-                
-                if is_sentence_start:
-                    word = words_data[i].get('word', '').lower().strip()
-                    start_time = words_data[i].get('start', 0)
-                    
-                    # Check for question patterns at sentence start (2-3 word windows)
-                    is_question_pattern = False
-                    question_text = ''
-                    
-                    if i < len(words_data) - 1:
-                        two_word = f"{word} {words_data[i+1].get('word', '').lower()}".strip()
-                        if any(pattern in two_word for pattern in question_patterns):
-                            is_question_pattern = True
-                            # Capture up to 20 words or until next sentence boundary
-                            end_idx = i + 1
-                            for j in range(i + 2, min(i + 20, len(words_data))):
-                                if j > 0:
-                                    pause = words_data[j].get('start', 0) - words_data[j-1].get('end', 0)
-                                    if pause > 0.8:  # Sentence boundary
-                                        break
-                                end_idx = j
-                            
-                            question_words = [words_data[j].get('word', '') for j in range(i, end_idx + 1)]
-                            question_text = ' '.join(question_words)
-                    
-                    if is_question_pattern and len(question_text.split()) >= 3:
-                        detected_questions.append({
-                            'question': question_text.strip(),
-                            'start_time': start_time,
-                            'start_idx': i,
-                            'end_idx': end_idx + 1,
-                            'confidence': 'high',
-                            'detection_method': 'pattern_at_sentence_boundary'
-                        })
-                        i = end_idx + 1
-                        continue
-                
-                i += 1
+        # Split transcript into sentences using punctuation
+        import re
+        # Split by sentence-ending punctuation (., !, ?) followed by space and capital letter
+        # This preserves the punctuation in the split
+        sentences = re.split(r'([.!?])\s+([A-Z])', transcript_text)
         
+        # Reconstruct sentences with their punctuation
+        sentence_list = []
+        current_sentence = ""
+        for i, part in enumerate(sentences):
+            if i == 0:
+                current_sentence = part
+            elif i % 3 == 1:  # This is the punctuation mark
+                current_sentence += part
+            elif i % 3 == 2:  # This is the capital letter start of next sentence
+                current_sentence += " " + part
+                sentence_list.append(current_sentence.strip())
+                current_sentence = ""
+            else:
+                current_sentence += part
+        
+        # Add the last sentence if it exists
+        if current_sentence.strip():
+            sentence_list.append(current_sentence.strip())
+        
+        # Filter sentences to find questions
+        for sentence in sentence_list:
+            sentence = sentence.strip()
+            
+            # Skip empty sentences
+            if not sentence:
+                continue
+            
+            # Criterion 1: Must end with question mark
+            if not sentence.endswith('?'):
+                continue
+            
+            # Criterion 2: Must start with a capital letter (complete sentence)
+            if not sentence[0].isupper():
+                continue
+            
+            # Criterion 3: Must have minimum length (at least 3 words)
+            words = sentence.split()
+            if len(words) < 3:
+                continue
+            
+            # Criterion 4: Must start with a question word
+            first_word = words[0].lower().strip('.,!?;:')
+            second_word = words[1].lower().strip('.,!?;:') if len(words) > 1 else ""
+            
+            # Check if starts with question word (single word or two-word pattern)
+            starts_with_question_word = False
+            
+            # Single word check
+            if first_word in question_start_words:
+                starts_with_question_word = True
+            # Two-word patterns (e.g., "What if", "How do", "Can you")
+            elif len(words) >= 2:
+                two_word_pattern = f"{first_word} {second_word}"
+                if any(qw in two_word_pattern for qw in question_start_words):
+                    starts_with_question_word = True
+            
+            if not starts_with_question_word:
+                continue
+            
+            # Criterion 5: Additional filtering - exclude very short fragments
+            # Remove punctuation for length check
+            sentence_clean = re.sub(r'[^\w\s]', '', sentence)
+            if len(sentence_clean.split()) < 3:
+                continue
+            
+            # Find the corresponding word timestamps for this sentence
+            # Match by finding the first few words in the word data
+            start_time = None
+            start_idx = None
+            end_idx = None
+            
+            if words_data:
+                # Try to find the sentence in word data by matching first 2-3 words
+                first_words_lower = [w.lower().strip('.,!?;:') for w in words[:3]]
+                
+                for i in range(len(words_data) - len(first_words_lower) + 1):
+                    # Get a window of words to match against
+                    window_words = []
+                    for j in range(i, min(i + 5, len(words_data))):
+                        word = words_data[j].get('word', '').lower().strip('.,!?;:')
+                        window_words.append(word)
+                    
+                    window_text = ' '.join(window_words)
+                    
+                    # Check if first 2-3 words of the sentence match the window
+                    match_count = 0
+                    for fw in first_words_lower:
+                        if fw in window_text:
+                            match_count += 1
+                    
+                    # If at least 2 words match, consider it a match
+                    if match_count >= 2:
+                        start_time = words_data[i].get('start', 0)
+                        start_idx = i
+                        # Estimate end index based on sentence length
+                        end_idx = min(i + len(words), len(words_data))
+                        break
+            
+            # If we found a match (or if no word data available), add the question
+            if start_time is not None or not words_data:
+                detected_questions.append({
+                    'question': sentence,
+                    'start_time': start_time if start_time is not None else 0,
+                    'start_idx': start_idx,
+                    'end_idx': end_idx,
+                    'confidence': 'high',
+                    'detection_method': 'polished_transcript_pattern_matching'
+                })
+        
+        logger.info(f"✅ Detected {len(detected_questions)} questions from polished transcript")
         return detected_questions
 
     async def analyze_interaction_engagement(self, speech_analysis: Dict) -> Dict[str, Any]:
@@ -1687,13 +1691,18 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     "role": "system",
                     "content": """You are an expert in educational interaction analysis. Your task is to identify questions and interaction moments in lecture transcripts.
 
-IMPORTANT: The transcript has been post-processed with proper punctuation. You should:
-1. Focus on sentences that end with question marks (?)
-2. Only identify complete questions (not statements with question words in the middle)
-3. Consider semantic meaning and intent for sentences that are clearly questions but may lack punctuation
-4. Do NOT identify questions based solely on question words (what, why, how, etc.) if they appear in the middle of statements
-3. Interaction patterns (e.g., "Let's hear from...", "Can someone...", "Turn to your partner...")
-4. Cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...", "Think about...")
+IMPORTANT: The transcript has been post-processed with proper punctuation and sentence segmentation. Use the polished transcript to identify questions.
+
+STRICT CRITERIA for identifying questions:
+1. Must end with a question mark (?)
+2. Must start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, who, whom, whose, where, when, which)
+3. Must be a complete sentence (starts with capital letter, minimum 3 words)
+4. Do NOT identify questions if question words appear in the middle of statements
+5. Only identify actual questions, not rhetorical statements or fragments
+
+The pattern-matching system has already identified questions that meet these criteria. Use them as a reference, but you can also identify additional questions that meet the same strict criteria.
+
+Also identify interaction patterns (e.g., "Let's hear from...", "Can someone...", "Turn to your partner...") and cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...", "Think about...").
 
 Classify questions as:
 - High-level/open-ended: Require analysis, evaluation, or synthesis (e.g., "Why do you think...", "How would you...", "What if...")
@@ -1705,16 +1714,19 @@ For each interaction, provide the approximate timestamp and classify the type.""
                 },
                 {
                     "role": "user",
-                    "content": f"""Analyze this lecture transcript for interaction and questioning. The transcript has been post-processed with proper punctuation and sentence segmentation.
+                    "content": f"""Analyze this polished lecture transcript for interaction and questioning. The transcript has been post-processed with proper punctuation and sentence segmentation.
 
-IMPORTANT: Only identify questions that:
+STRICT CRITERIA - Only identify questions that:
 1. End with a question mark (?)
-2. Are complete sentences (not fragments)
-3. Are actual questions (not statements with question words in the middle)
+2. Start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, who, whom, whose, where, when, which)
+3. Are complete sentences (start with capital letter, minimum 3 words)
+4. Are actual questions (not statements with question words in the middle)
 
-Transcript:
+Pattern-matched questions (already verified to meet criteria):
+{pattern_questions_text if pattern_matched_questions else "None detected"}
+
+Full Transcript:
 {transcript[:6000]}{'...' if len(transcript) > 6000 else ''}
-{pattern_questions_text}
 
 Return as JSON with:
 - high_level_questions: list of {{"question": str (exact text from transcript), "approx_time": "MM:SS", "type": str (e.g., "open-ended", "clarification", "rhetorical", "direct"), "cognitive_level": str ("low"/"medium"/"high")}}
@@ -1724,7 +1736,7 @@ Return as JSON with:
 - student_engagement_opportunities: score 1-10 (based on opportunities for student participation)
 - cognitive_level: "low"/"medium"/"high" (overall cognitive demand of questions)
 
-Focus on identifying ALL questions, including those that might be implicit or rhetorical."""
+Focus on identifying ALL questions that meet the strict criteria above. Include the pattern-matched questions in your response."""
                 }
             ],
             max_tokens=2000,  # Increased for more comprehensive analysis
