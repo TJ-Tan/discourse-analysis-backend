@@ -1525,27 +1525,21 @@ Return only the processed transcript with proper punctuation and sentence segmen
 
     def detect_questions_pattern_matching(self, words_data: List[Dict], transcript_text: str = "") -> List[Dict]:
         """
-        Detect questions from polished transcript using pattern matching.
+        Detect ALL questions from polished transcript.
         Uses polished transcript (with proper punctuation from GPT post-processing).
         
         Criteria for a valid question:
         1. Must end with a question mark (?)
-        2. Must start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, etc.)
-        3. Must be a complete sentence (starts with capital letter, minimum 3 words)
-        4. Must not be a fragment or incomplete thought
+        2. Must be a complete sentence (starts with capital letter, minimum 3 words)
+        3. Includes ALL questions regardless of cognitive level or question word
+        
+        This function lists ALL questions first, then AI will analyze which are high-level.
         """
         if not transcript_text:
             logger.warning("⚠️ No polished transcript text provided for question detection")
             return []
         
         detected_questions = []
-        
-        # Question words that indicate a question (at sentence start)
-        question_start_words = [
-            'why', 'what', 'how', 'can', 'could', 'would', 'should', 'will',
-            'do', 'does', 'did', 'is', 'are', 'was', 'were', 'am', 'have', 'has', 'had',
-            'who', 'whom', 'whose', 'where', 'when', 'which'
-        ]
         
         # Split transcript into sentences using punctuation
         import re
@@ -1572,7 +1566,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         if current_sentence.strip():
             sentence_list.append(current_sentence.strip())
         
-        # Filter sentences to find questions
+        # Filter sentences to find ALL questions (ending with ?)
         for sentence in sentence_list:
             sentence = sentence.strip()
             
@@ -1593,26 +1587,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
             if len(words) < 3:
                 continue
             
-            # Criterion 4: Must start with a question word
-            first_word = words[0].lower().strip('.,!?;:')
-            second_word = words[1].lower().strip('.,!?;:') if len(words) > 1 else ""
-            
-            # Check if starts with question word (single word or two-word pattern)
-            starts_with_question_word = False
-            
-            # Single word check
-            if first_word in question_start_words:
-                starts_with_question_word = True
-            # Two-word patterns (e.g., "What if", "How do", "Can you")
-            elif len(words) >= 2:
-                two_word_pattern = f"{first_word} {second_word}"
-                if any(qw in two_word_pattern for qw in question_start_words):
-                    starts_with_question_word = True
-            
-            if not starts_with_question_word:
-                continue
-            
-            # Criterion 5: Additional filtering - exclude very short fragments
+            # Criterion 4: Additional filtering - exclude very short fragments
             # Remove punctuation for length check
             sentence_clean = re.sub(r'[^\w\s]', '', sentence)
             if len(sentence_clean.split()) < 3:
@@ -1659,88 +1634,106 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     'start_idx': start_idx,
                     'end_idx': end_idx,
                     'confidence': 'high',
-                    'detection_method': 'polished_transcript_pattern_matching'
+                    'detection_method': 'all_questions_with_question_mark'
                 })
         
-        logger.info(f"✅ Detected {len(detected_questions)} questions from polished transcript")
+        logger.info(f"✅ Detected {len(detected_questions)} questions (all questions ending with ?) from polished transcript")
         return detected_questions
 
     async def analyze_interaction_engagement(self, speech_analysis: Dict) -> Dict[str, Any]:
         """
         Analyze instructor-student interaction and questioning techniques
-        Enhanced with pattern matching + AI analysis
+        
+        New Logic:
+        1. List ALL questions (ending with ? or sounding like questions)
+        2. Analyze which questions are high-level pedagogically
+        3. Mark high-level questions
+        4. Count total questions and high-level questions
+        5. Calculate scoring based on questions
         """
         transcript = speech_analysis.get('transcript', '')
         words_data = speech_analysis.get('word_timestamps', [])
         
-        # Step 1: Pattern matching to detect potential questions (only at sentence boundaries)
-        pattern_matched_questions = self.detect_questions_pattern_matching(words_data, transcript)
+        # Step 1: Detect ALL questions (ending with ?) - regardless of cognitive level
+        all_questions = self.detect_questions_pattern_matching(words_data, transcript)
         
-        # Step 2: Prepare context for AI with pattern-matched questions as hints
-        pattern_questions_text = ""
-        if pattern_matched_questions:
-            pattern_questions_text = "\n\nPattern-matched potential questions (for reference):\n"
-            for q in pattern_matched_questions[:10]:  # Limit to first 10
-                pattern_questions_text += f"- {q['question'][:100]}... (confidence: {q['confidence']})\n"
+        logger.info(f"📋 Step 1: Found {len(all_questions)} total questions")
         
-        # Step 3: Enhanced AI analysis with better prompts
+        # Step 2: Prepare list of all questions for AI analysis
+        all_questions_text = ""
+        if all_questions:
+            all_questions_text = "\n\nAll questions detected (ending with ?):\n"
+            for idx, q in enumerate(all_questions, 1):
+                timestamp = self.format_timestamp(q['start_time'])
+                all_questions_text += f"{idx}. [{timestamp}] {q['question']}\n"
+        else:
+            all_questions_text = "\n\nNo questions detected (ending with ?)."
+        
+        # Step 3: AI analysis to identify high-level questions and calculate scores
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert in educational interaction analysis. Your task is to identify questions and interaction moments in lecture transcripts.
+                    "content": """You are an expert in educational interaction analysis and pedagogical assessment. Your task is to:
 
-IMPORTANT: The transcript has been post-processed with proper punctuation and sentence segmentation. Use the polished transcript to identify questions.
+1. Analyze ALL questions provided (they all end with ?)
+2. Identify which questions are HIGH-LEVEL pedagogically (require analysis, evaluation, synthesis, critical thinking)
+3. Classify question types
+4. Calculate interaction and engagement scores based on the questions
 
-STRICT CRITERIA for identifying questions:
-1. Must end with a question mark (?)
-2. Must start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, who, whom, whose, where, when, which)
-3. Must be a complete sentence (starts with capital letter, minimum 3 words)
-4. Do NOT identify questions if question words appear in the middle of statements
-5. Only identify actual questions, not rhetorical statements or fragments
+HIGH-LEVEL questions are those that:
+- Require analysis, evaluation, or synthesis (e.g., "Why do you think...", "How would you...", "What if...", "What are the implications of...")
+- Promote critical thinking and deeper understanding
+- Are open-ended and encourage discussion
+- Go beyond simple factual recall
 
-The pattern-matching system has already identified questions that meet these criteria. Use them as a reference, but you can also identify additional questions that meet the same strict criteria.
+NOT high-level questions:
+- Simple factual questions (e.g., "What is X?", "Who did Y?")
+- Yes/No questions (e.g., "Do you understand?", "Is that clear?")
+- Clarification questions (e.g., "Any questions?", "Does that make sense?")
+- Rhetorical questions that don't require deep thinking
 
-Also identify interaction patterns (e.g., "Let's hear from...", "Can someone...", "Turn to your partner...") and cognitive engagement prompts (e.g., "Analyze...", "Compare...", "Evaluate...", "Think about...").
-
-Classify questions as:
-- High-level/open-ended: Require analysis, evaluation, or synthesis (e.g., "Why do you think...", "How would you...", "What if...")
-- Clarification: Seek understanding (e.g., "Do you understand...", "Any questions...")
-- Rhetorical: Don't expect answers but engage thinking
-- Direct: Simple factual questions
-
-For each interaction, provide the approximate timestamp and classify the type."""
+Classify each question as:
+- "high_level": Requires analysis, evaluation, synthesis, critical thinking
+- "clarification": Seeks understanding or confirmation
+- "rhetorical": Engages thinking but doesn't expect detailed answers
+- "direct": Simple factual questions
+- "low_level": Basic recall or yes/no questions"""
                 },
                 {
                     "role": "user",
-                    "content": f"""Analyze this polished lecture transcript for interaction and questioning. The transcript has been post-processed with proper punctuation and sentence segmentation.
+                    "content": f"""Analyze the following questions from a lecture transcript. All questions below end with a question mark (?).
 
-STRICT CRITERIA - Only identify questions that:
-1. End with a question mark (?)
-2. Start with a question word (why, what, how, can, could, would, should, do, does, did, is, are, will, who, whom, whose, where, when, which)
-3. Are complete sentences (start with capital letter, minimum 3 words)
-4. Are actual questions (not statements with question words in the middle)
+{all_questions_text}
 
-Pattern-matched questions (already verified to meet criteria):
-{pattern_questions_text if pattern_matched_questions else "None detected"}
+For each question, determine:
+1. Is it a HIGH-LEVEL question pedagogically? (requires analysis, evaluation, synthesis, critical thinking)
+2. What type is it? (high_level, clarification, rhetorical, direct, low_level)
 
-Full Transcript:
-{transcript[:6000]}{'...' if len(transcript) > 6000 else ''}
+Then calculate:
+- Total number of questions
+- Number of high-level questions
+- Interaction frequency score (1-10): Based on total number of questions and frequency throughout the lecture
+- Question quality score (1-10): Based on the proportion of high-level questions and their pedagogical value
+- Student engagement opportunities score (1-10): Based on opportunities for student participation and interaction
+- Overall cognitive level: "low", "medium", or "high" based on the proportion of high-level questions
 
 Return as JSON with:
-- high_level_questions: list of {{"question": str (exact text from transcript), "approx_time": "MM:SS", "type": str (e.g., "open-ended", "clarification", "rhetorical", "direct"), "cognitive_level": str ("low"/"medium"/"high")}}
-- interaction_moments: list of {{"moment": str (exact text), "approx_time": "MM:SS", "type": str (e.g., "student_call", "pair_work", "discussion_prompt")}}
-- interaction_frequency: score 1-10 (based on number and frequency of interactions)
-- question_quality: score 1-10 (based on depth, cognitive level, and pedagogical value)
-- student_engagement_opportunities: score 1-10 (based on opportunities for student participation)
-- cognitive_level: "low"/"medium"/"high" (overall cognitive demand of questions)
+- all_questions_analyzed: list of {{"question": str (exact text), "is_high_level": bool, "type": str, "cognitive_level": str ("low"/"medium"/"high")}}
+- total_questions: int
+- high_level_questions_count: int
+- high_level_questions: list of {{"question": str, "type": str, "cognitive_level": str}} (only high-level ones)
+- interaction_frequency: float (1-10)
+- question_quality: float (1-10)
+- student_engagement_opportunities: float (1-10)
+- cognitive_level: str ("low"/"medium"/"high")
 
-Focus on identifying ALL questions that meet the strict criteria above. Include the pattern-matched questions in your response."""
+Be thorough and accurate in your analysis."""
                 }
             ],
-            max_tokens=2000,  # Increased for more comprehensive analysis
-            temperature=0.3  # Lower temperature for more consistent detection
+            max_tokens=3000,  # Increased for comprehensive analysis
+            temperature=0.3  # Lower temperature for consistent analysis
         )
         
         try:
@@ -1751,110 +1744,82 @@ Focus on identifying ALL questions that meet the strict criteria above. Include 
             
             analysis = json.loads(response_content)
             
-            # Step 4: Merge pattern-matched questions with AI-detected questions
-            ai_questions = analysis.get('high_level_questions', [])
+            # Step 4: Process AI analysis results
+            all_questions_analyzed = analysis.get('all_questions_analyzed', [])
+            total_questions = analysis.get('total_questions', len(all_questions))
+            high_level_questions_count = analysis.get('high_level_questions_count', 0)
+            high_level_questions_list = analysis.get('high_level_questions', [])
             
-            # Match AI questions to precise timestamps
-            for question_data in ai_questions:
-                question_text = question_data.get('question', '')
-                if not question_text:
-                    continue
+            # Step 5: Match questions to timestamps from pattern-matched questions
+            # Create a mapping of question text to timestamp from pattern-matched questions
+            question_timestamp_map = {}
+            for q in all_questions:
+                question_text_clean = q['question'].strip().lower()
+                question_timestamp_map[question_text_clean] = {
+                    'start_time': q['start_time'],
+                    'timestamp': self.format_timestamp(q['start_time'])
+                }
+            
+            # Step 6: Build final question lists with timestamps
+            final_all_questions = []
+            final_high_level_questions = []
+            
+            for analyzed_q in all_questions_analyzed:
+                question_text = analyzed_q.get('question', '').strip()
+                is_high_level = analyzed_q.get('is_high_level', False)
+                question_type = analyzed_q.get('type', 'direct')
+                cognitive_level = analyzed_q.get('cognitive_level', 'medium')
                 
-                # Find precise timestamp in word data
-                best_match = None
-                best_match_score = 0
+                # Find timestamp from pattern-matched questions
+                question_text_clean = question_text.lower()
+                timestamp_info = question_timestamp_map.get(question_text_clean)
                 
-                # Try to find the question in the word data
-                question_words_lower = question_text.lower().split()
-                if len(question_words_lower) >= 3:
-                    # Look for matching sequence of words
-                    for i in range(len(words_data) - len(question_words_lower) + 1):
-                        window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + len(question_words_lower) + 5, len(words_data)))]
-                        window_text = ' '.join(window_words)
-                        
-                        # Check if first few words of question match
-                        first_words = ' '.join(question_words_lower[:3])
-                        if first_words in window_text:
-                            # Calculate match score
-                            matches = sum(1 for w in question_words_lower[:5] if w in window_text)
-                            if matches > best_match_score:
-                                best_match_score = matches
-                                best_match = words_data[i]
-                
-                if best_match:
-                    question_data['precise_timestamp'] = self.format_timestamp(best_match.get('start', 0))
-                    question_data['start_time'] = round(best_match.get('start', 0), 2)
+                if timestamp_info:
+                    timestamp = timestamp_info['timestamp']
+                    start_time = timestamp_info['start_time']
                 else:
-                    # Fallback: use approximate time if provided
-                    if 'approx_time' in question_data:
-                        # Try to parse MM:SS format
-                        try:
-                            time_parts = question_data['approx_time'].split(':')
-                            if len(time_parts) == 2:
-                                minutes = int(time_parts[0])
-                                seconds = int(time_parts[1])
-                                total_seconds = minutes * 60 + seconds
-                                question_data['precise_timestamp'] = self.format_timestamp(total_seconds)
-                                question_data['start_time'] = total_seconds
-                        except:
-                            pass
-            
-            # Merge pattern-matched questions that weren't caught by AI
-            ai_question_texts = {q.get('question', '').lower()[:50] for q in ai_questions}
-            for pattern_q in pattern_matched_questions:
-                pattern_text = pattern_q['question'].lower()[:50]
-                # Only add if not already detected by AI
-                if not any(pattern_text in ai_text or ai_text in pattern_text for ai_text in ai_question_texts):
-                    # Add pattern-matched question with timestamp
-                    timestamp = self.format_timestamp(pattern_q['start_time'])
-                    ai_questions.append({
-                        'question': pattern_q['question'],
-                        'precise_timestamp': timestamp,
-                        'start_time': pattern_q['start_time'],
-                        'type': 'detected',
-                        'cognitive_level': 'medium',
-                        'detection_method': 'pattern_matching',
-                        'confidence': pattern_q['confidence']
-                    })
-            
-            # Sort questions by timestamp
-            ai_questions.sort(key=lambda x: x.get('start_time', 0))
-            
-            # Match interaction moments to timestamps
-            for moment_data in analysis.get('interaction_moments', []):
-                moment_text = moment_data.get('moment', '')
-                if not moment_text:
-                    continue
-                
-                # Find timestamp similar to question matching
-                moment_words_lower = moment_text.lower().split()
-                if len(moment_words_lower) >= 2:
-                    for i in range(len(words_data) - len(moment_words_lower) + 1):
-                        window_words = [words_data[j].get('word', '').lower() for j in range(i, min(i + len(moment_words_lower) + 3, len(words_data)))]
-                        window_text = ' '.join(window_words)
-                        
-                        first_words = ' '.join(moment_words_lower[:2])
-                        if first_words in window_text:
-                            moment_data['precise_timestamp'] = self.format_timestamp(words_data[i].get('start', 0))
-                            moment_data['start_time'] = round(words_data[i].get('start', 0), 2)
+                    # Try fuzzy matching if exact match not found
+                    timestamp = "00:00"
+                    start_time = 0
+                    for q in all_questions:
+                        if question_text.lower()[:30] in q['question'].lower()[:50] or q['question'].lower()[:30] in question_text.lower()[:50]:
+                            timestamp = self.format_timestamp(q['start_time'])
+                            start_time = q['start_time']
                             break
+                
+                question_entry = {
+                    'question': question_text,
+                    'precise_timestamp': timestamp,
+                    'start_time': start_time,
+                    'type': question_type,
+                    'cognitive_level': cognitive_level,
+                    'is_high_level': is_high_level
+                }
+                
+                final_all_questions.append(question_entry)
+                
+                # Add to high-level list if marked as high-level
+                if is_high_level:
+                    final_high_level_questions.append(question_entry)
             
-            # Calculate scores - if no questions detected, adjust scores accordingly
-            total_questions = len(ai_questions)
-            total_interactions = len(analysis.get('interaction_moments', []))
+            # Step 7: Calculate scores from AI analysis
+            interaction_frequency = analysis.get('interaction_frequency', 5.0)
+            question_quality = analysis.get('question_quality', 5.0)
+            student_engagement_opportunities = analysis.get('student_engagement_opportunities', 5.0)
+            cognitive_level = analysis.get('cognitive_level', 'medium')
             
-            # If no questions/interactions detected, use lower default scores
-            if total_questions == 0 and total_interactions == 0:
-                interaction_frequency = 3.0  # Low score when no interactions
-                question_quality = 3.0  # Low score when no questions
-                student_engagement_opportunities = 3.0  # Low score when no engagement
+            # Adjust scores if no questions detected
+            if total_questions == 0:
+                interaction_frequency = 3.0
+                question_quality = 3.0
+                student_engagement_opportunities = 3.0
                 cognitive_level = 'low'
-            else:
-                # Use AI-provided scores or defaults
-                interaction_frequency = analysis.get('interaction_frequency', 7) if total_questions > 0 or total_interactions > 0 else 3.0
-                question_quality = analysis.get('question_quality', 7) if total_questions > 0 else 3.0
-                student_engagement_opportunities = analysis.get('student_engagement_opportunities', 7) if total_interactions > 0 else 3.0
-                cognitive_level = analysis.get('cognitive_level', 'medium')
+            elif high_level_questions_count == 0 and total_questions > 0:
+                # Some questions but none are high-level
+                question_quality = max(3.0, question_quality - 2.0)  # Reduce quality score
+                cognitive_level = 'low' if cognitive_level == 'high' else cognitive_level
+            
+            logger.info(f"✅ Question analysis complete: {total_questions} total questions, {high_level_questions_count} high-level questions")
             
             return {
                 'score': round((interaction_frequency + question_quality + student_engagement_opportunities) / 3, 1),
@@ -1862,10 +1827,11 @@ Focus on identifying ALL questions that meet the strict criteria above. Include 
                 'question_quality': round(question_quality, 1),
                 'student_engagement_opportunities': round(student_engagement_opportunities, 1),
                 'cognitive_level': cognitive_level,
-                'high_level_questions': ai_questions[:15],  # Increased limit
-                'interaction_moments': analysis.get('interaction_moments', [])[:15],
+                'high_level_questions': final_high_level_questions[:20],  # All high-level questions
+                'all_questions': final_all_questions[:30],  # All questions for reference
                 'total_questions': total_questions,
-                'total_interactions': total_interactions
+                'high_level_questions_count': high_level_questions_count,
+                'total_interactions': total_questions  # Questions are the main interactions
             }
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
@@ -1873,7 +1839,7 @@ Focus on identifying ALL questions that meet the strict criteria above. Include 
             logger.error(f"Error in interaction analysis: {error_msg}")
             # Fallback: use pattern-matched questions if AI fails
             fallback_questions = []
-            for q in pattern_matched_questions[:10]:
+            for q in all_questions[:10]:
                 fallback_questions.append({
                     'question': q['question'],
                     'precise_timestamp': self.format_timestamp(q['start_time']),
