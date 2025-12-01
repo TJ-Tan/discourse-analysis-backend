@@ -281,38 +281,51 @@ class VideoAnalysisProcessor:
         
         subprocess.run(audio_command, capture_output=True, check=True)
         
-        # Enhanced video frame extraction
+        # Enhanced video frame extraction with duration-based intervals
         video_frames = []
         cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration_seconds = total_frames / fps
+        duration_minutes = duration_seconds / 60
+        duration_hours = duration_minutes / 60
         
-        # Use configurable frame sampling
-        frame_interval_seconds = ANALYSIS_CONFIG["sampling"]["frame_interval_seconds"]
-        max_frames = ANALYSIS_CONFIG["sampling"]["max_frames_analyzed"]
+        # Determine frame extraction interval based on video duration
+        # 1. If video < 1 hour: extract every 1 minute (60 seconds)
+        # 2. If video 1-2 hours: extract every 2 minutes (120 seconds)
+        # 3. Maximum 60 frames for any video
+        if duration_hours < 1.0:
+            frame_interval_seconds = 60  # 1 minute
+        else:
+            frame_interval_seconds = 120  # 2 minutes
         
-        frame_interval = int(fps * frame_interval_seconds)
-        
-        # Calculate actual frames to extract
+        # Calculate how many frames we would extract with this interval
         estimated_frames = int(duration_seconds / frame_interval_seconds)
+        
+        # Cap at maximum 60 frames
+        max_frames = 60
         frames_to_extract = min(estimated_frames, max_frames)
         
-        # If video is long, space frames more evenly
+        # If we would extract more than max_frames, adjust interval to evenly distribute
         if estimated_frames > max_frames:
-            frame_interval = total_frames // max_frames
+            frame_interval_seconds = duration_seconds / max_frames
+            frames_to_extract = max_frames
         
-        logger.info(f"📊 Video duration: {duration_seconds:.1f}s, extracting {frames_to_extract} frames")
+        frame_interval_frames = int(fps * frame_interval_seconds)
+        
+        logger.info(f"📊 Video duration: {duration_seconds:.1f}s ({duration_minutes:.1f} min), extracting {frames_to_extract} frames every {frame_interval_seconds:.0f} seconds")
         
         frame_count = 0
         extracted_count = 0
+        next_extract_frame = 0
         
-        while True and extracted_count < frames_to_extract:
+        while extracted_count < frames_to_extract:
             ret, frame = cap.read()
             if not ret:
                 break
-                
-            if frame_count % frame_interval == 0:
+            
+            # Extract frame at calculated intervals
+            if frame_count >= next_extract_frame:
                 # Resize frame for processing
                 frame_resized = cv2.resize(frame, (640, 480))
                 video_frames.append({
@@ -321,6 +334,7 @@ class VideoAnalysisProcessor:
                     'frame_number': frame_count
                 })
                 extracted_count += 1
+                next_extract_frame = frame_count + frame_interval_frames
                 
             frame_count += 1
             
@@ -1541,30 +1555,56 @@ Return only the processed transcript with proper punctuation and sentence segmen
         
         detected_questions = []
         
-        # Split transcript into sentences using punctuation
+        # Split transcript into sentences - use a simpler, more reliable approach
         import re
-        # Split by sentence-ending punctuation (., !, ?) followed by space and capital letter
-        # This preserves the punctuation in the split
-        sentences = re.split(r'([.!?])\s+([A-Z])', transcript_text)
         
-        # Reconstruct sentences with their punctuation
+        # First, find all sentences ending with question marks using regex
+        # Pattern: Start with capital letter, capture everything until question mark
+        question_pattern = r'([A-Z][^.!?]*\?)'
+        question_matches = re.findall(question_pattern, transcript_text)
+        
         sentence_list = []
+        for match in question_matches:
+            sentence = match.strip()
+            if sentence:
+                sentence_list.append(sentence)
+        
+        # Also try splitting by sentence boundaries for completeness
+        # Split on sentence-ending punctuation followed by space and capital letter
+        sentences_split = re.split(r'([.!?])\s+([A-Z])', transcript_text)
+        
+        # Reconstruct sentences from split
         current_sentence = ""
-        for i, part in enumerate(sentences):
+        for i, part in enumerate(sentences_split):
             if i == 0:
                 current_sentence = part
-            elif i % 3 == 1:  # This is the punctuation mark
+            elif i % 3 == 1:  # Punctuation mark
                 current_sentence += part
-            elif i % 3 == 2:  # This is the capital letter start of next sentence
+            elif i % 3 == 2:  # Capital letter (start of next sentence)
                 current_sentence += " " + part
-                sentence_list.append(current_sentence.strip())
+                if current_sentence.strip().endswith('?'):
+                    sentence = current_sentence.strip()
+                    if sentence and sentence not in sentence_list:
+                        sentence_list.append(sentence)
                 current_sentence = ""
             else:
                 current_sentence += part
         
-        # Add the last sentence if it exists
-        if current_sentence.strip():
-            sentence_list.append(current_sentence.strip())
+        # Add last sentence if it ends with ?
+        if current_sentence.strip().endswith('?'):
+            sentence = current_sentence.strip()
+            if sentence and sentence not in sentence_list:
+                sentence_list.append(sentence)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_sentences = []
+        for s in sentence_list:
+            s_lower = s.lower().strip()
+            if s_lower not in seen:
+                seen.add(s_lower)
+                unique_sentences.append(s)
+        sentence_list = unique_sentences
         
         # Filter sentences to find ALL questions (ending with ?)
         for sentence in sentence_list:
@@ -1638,6 +1678,10 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 })
         
         logger.info(f"✅ Detected {len(detected_questions)} questions (all questions ending with ?) from polished transcript")
+        if len(detected_questions) > 0:
+            logger.info(f"📋 Sample questions detected: {[q['question'][:50] + '...' if len(q['question']) > 50 else q['question'] for q in detected_questions[:3]]}")
+        else:
+            logger.warning(f"⚠️ No questions detected. Transcript length: {len(transcript_text)}, Sample text: {transcript_text[:200]}")
         return detected_questions
 
     async def analyze_interaction_engagement(self, speech_analysis: Dict) -> Dict[str, Any]:
