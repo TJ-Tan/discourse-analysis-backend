@@ -478,11 +478,48 @@ async def queue_list():
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
+@app.post("/validate-passkey")
+async def validate_passkey(request: Request, passkey_data: dict):
+    """
+    Validate the passkey before allowing video upload
+    """
+    expected_passkey = os.getenv('MARS_PASSKEY', '')
+    
+    if not expected_passkey:
+        # If no passkey is set, allow access (backward compatibility)
+        return JSONResponse(content={'valid': True, 'message': 'Passkey not configured'})
+    
+    provided_passkey = passkey_data.get('passkey', '')
+    
+    if provided_passkey == expected_passkey:
+        return JSONResponse(content={'valid': True, 'message': 'Passkey validated'})
+    else:
+        return JSONResponse(
+            status_code=401,
+            content={'valid': False, 'message': 'Invalid passkey'}
+        )
+
 @app.post("/upload-video")
 async def upload_video(request: Request, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     """
     Upload a lecture video for enhanced AI-powered analysis with queue management
     """
+    # Validate passkey if configured
+    expected_passkey = os.getenv('MARS_PASSKEY', '')
+    if expected_passkey:
+        # Get passkey from form data (multipart/form-data)
+        try:
+            form_data = await request.form()
+            provided_passkey = form_data.get('passkey', '')
+        except:
+            provided_passkey = None
+        
+        if not provided_passkey or provided_passkey != expected_passkey:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or missing passkey. Please verify your passkey."
+            )
+    
     # Get client IP address
     client_ip = request.client.host if request.client else "unknown"
     # Try to get real IP from headers (for proxies/load balancers)
