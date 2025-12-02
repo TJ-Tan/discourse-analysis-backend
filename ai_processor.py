@@ -326,7 +326,7 @@ class VideoAnalysisProcessor:
             ret, frame = cap.read()
             if not ret:
                 break
-            
+                
             # Extract frame at calculated intervals
             if frame_count >= next_extract_frame:
                 # Resize frame for processing
@@ -391,7 +391,7 @@ class VideoAnalysisProcessor:
                 # Assign timestamp to all words in current sentence
                 sentence_timestamp = self.format_timestamp(sentence_start_time)
                 for sentence_word_data in current_sentence:
-                    timecoded_transcript.append({
+            timecoded_transcript.append({
                         'word': sentence_word_data['word'],
                         'start': round(sentence_word_data['start'], 2),
                         'end': round(sentence_word_data['end'], 2),
@@ -411,7 +411,7 @@ class VideoAnalysisProcessor:
                     'start': round(sentence_word_data['start'], 2),
                     'end': round(sentence_word_data['end'], 2),
                     'timestamp': sentence_timestamp
-                })
+            })
         
         return timecoded_transcript
     
@@ -728,14 +728,14 @@ class VideoAnalysisProcessor:
             await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly (English)...")
             
             # Process directly with English language enforcement (raw transcription, no punctuation prompt)
-            with open(audio_path, "rb") as audio_file:
-                transcript_response = openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json",
+        with open(audio_path, "rb") as audio_file:
+            transcript_response = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="verbose_json",
                     timestamp_granularities=["word"],
                     language="en"  # Force English transcription (no punctuation prompt - get raw text)
-                )
+            )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
         
@@ -994,7 +994,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                         }
                     ],
                     temperature=0.1,  # Low temperature for consistency
-                    max_completion_tokens=4000
+                    max_tokens=4000
                 )
                 
                 if response.choices and response.choices[0].message.content:
@@ -1229,7 +1229,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     Return as JSON with keys: content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, key_topics, techniques, improvements, strengths"""
                 }
             ],
-            max_completion_tokens=1200  # Increased token limit for full analysis
+            max_tokens=1200  # Increased token limit for full analysis
         )
         
         try:
@@ -1287,57 +1287,57 @@ Return only the processed transcript with proper punctuation and sentence segmen
             
             # Enhanced frame analysis with GPT-4o Vision
             try:
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o", # Vision requires gpt-4o, not mini
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
-                                    
-                                    1. Eye Contact & Gaze Direction: 
-                                       - Looking directly at camera/students vs reading/looking away
-                                       - Natural vs forced eye contact
-                                       - Consistency of gaze engagement
-                                    
-                                    2. Hand Gestures & Body Language:
-                                       - Purposeful gestures supporting content vs nervous/distracting movements
-                                       - Open, engaging gestures vs closed, defensive postures
-                                       - Gesture variety and naturalness
-                                    
-                                    3. Posture & Positioning:
-                                       - Confident, upright stance vs slouching/poor posture
-                                       - Appropriate positioning relative to camera/audience
-                                       - Movement and spatial awareness
-                                    
-                                    4. Facial Expressions & Engagement:
-                                       - Animated, engaging expressions vs flat/monotone
-                                       - Appropriate emotional expression for content
-                                       - Genuine enthusiasm and interest
-                                    
-                                    5. Professional Appearance:
-                                       - Appropriate dress and grooming
-                                       - Visual presentation quality
-                                       - Overall professional demeanor
-                                    
-                                    Rate each aspect from 1-10 and provide specific observations.
-                                    Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{frame_base64}",
-                                        "detail": "high"
-                                    }
+            response = openai_client.chat.completions.create(
+                model="gpt-4o", # Vision requires gpt-4o, not mini
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
+                                
+                                1. Eye Contact & Gaze Direction: 
+                                   - Looking directly at camera/students vs reading/looking away
+                                   - Natural vs forced eye contact
+                                   - Consistency of gaze engagement
+                                
+                                2. Hand Gestures & Body Language:
+                                   - Purposeful gestures supporting content vs nervous/distracting movements
+                                   - Open, engaging gestures vs closed, defensive postures
+                                   - Gesture variety and naturalness
+                                
+                                3. Posture & Positioning:
+                                   - Confident, upright stance vs slouching/poor posture
+                                   - Appropriate positioning relative to camera/audience
+                                   - Movement and spatial awareness
+                                
+                                4. Facial Expressions & Engagement:
+                                   - Animated, engaging expressions vs flat/monotone
+                                   - Appropriate emotional expression for content
+                                   - Genuine enthusiasm and interest
+                                
+                                5. Professional Appearance:
+                                   - Appropriate dress and grooming
+                                   - Visual presentation quality
+                                   - Overall professional demeanor
+                                
+                                Rate each aspect from 1-10 and provide specific observations.
+                                Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{frame_base64}",
+                                    "detail": "high"
                                 }
-                            ]
-                        }
-                    ],
-                    max_completion_tokens=600
-                )
-                
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=600
+            )
+            
                 # Check if response and choices exist
                 if not response or not response.choices or len(response.choices) == 0:
                     raise ValueError("OpenAI API returned empty response or no choices")
@@ -1493,7 +1493,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     strengths, improvements, recommendations, overall_effectiveness, detailed_analysis"""
                 }
             ],
-            max_completion_tokens=1400  # Increased for comprehensive analysis
+            max_tokens=1400  # Increased for comprehensive analysis
         )
         
         try:
@@ -1765,8 +1765,8 @@ Then calculate:
 - Question quality score (1-10): Based on the proportion of high-level questions and their pedagogical value
 - Student engagement opportunities score (1-10): Based on opportunities for student participation and interaction
 - Overall cognitive level: "low", "medium", or "high" based on the proportion of high-level questions
-
-Return as JSON with:
+                    
+                    Return as JSON with:
 - all_questions_analyzed: list of {{"question": str (exact text), "is_high_level": bool, "type": str, "cognitive_level": str ("low"/"medium"/"high")}}
 - total_questions: int
 - high_level_questions_count: int
@@ -1779,7 +1779,7 @@ Return as JSON with:
 Be thorough and accurate in your analysis."""
                 }
             ],
-            max_completion_tokens=3000,  # Increased for comprehensive analysis
+            max_tokens=3000,  # Increased for comprehensive analysis
             temperature=0.3  # Lower temperature for consistent analysis
         )
         
@@ -1912,17 +1912,17 @@ Be thorough and accurate in your analysis."""
                 }
             else:
                 # Some pattern-matched questions found
-                return {
-                    'score': 6.5,
-                    'interaction_frequency': 6.5,
-                    'question_quality': 6.5,
-                    'student_engagement_opportunities': 6.5,
-                    'cognitive_level': 'medium',
+            return {
+                'score': 6.5,
+                'interaction_frequency': 6.5,
+                'question_quality': 6.5,
+                'student_engagement_opportunities': 6.5,
+                'cognitive_level': 'medium',
                     'high_level_questions': fallback_questions,
-                    'interaction_moments': [],
+                'interaction_moments': [],
                     'total_questions': total_questions,
-                    'total_interactions': 0
-                }
+                'total_interactions': 0
+            }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
         """
@@ -2015,7 +2015,7 @@ Be thorough and accurate in your analysis."""
                     Return as JSON."""
                 }
             ],
-            max_completion_tokens=1500
+            max_tokens=1500
         )
         
         try:
