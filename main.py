@@ -672,7 +672,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
             "progress": 5
         }],
         "filename": file.filename,
-        "file_size": file_path.stat().st_size,
+        "file_size": file_path.stat().st_size if file_path.exists() else getattr(file, 'size', 0),
         "client_ip": client_ip,
         "analysis_config": {
             "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
