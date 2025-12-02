@@ -1287,57 +1287,57 @@ Return only the processed transcript with proper punctuation and sentence segmen
             
             # Enhanced frame analysis with GPT-4o Vision
             try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4o", # Vision requires gpt-4o, not mini
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
-                                
-                                1. Eye Contact & Gaze Direction: 
-                                   - Looking directly at camera/students vs reading/looking away
-                                   - Natural vs forced eye contact
-                                   - Consistency of gaze engagement
-                                
-                                2. Hand Gestures & Body Language:
-                                   - Purposeful gestures supporting content vs nervous/distracting movements
-                                   - Open, engaging gestures vs closed, defensive postures
-                                   - Gesture variety and naturalness
-                                
-                                3. Posture & Positioning:
-                                   - Confident, upright stance vs slouching/poor posture
-                                   - Appropriate positioning relative to camera/audience
-                                   - Movement and spatial awareness
-                                
-                                4. Facial Expressions & Engagement:
-                                   - Animated, engaging expressions vs flat/monotone
-                                   - Appropriate emotional expression for content
-                                   - Genuine enthusiasm and interest
-                                
-                                5. Professional Appearance:
-                                   - Appropriate dress and grooming
-                                   - Visual presentation quality
-                                   - Overall professional demeanor
-                                
-                                Rate each aspect from 1-10 and provide specific observations.
-                                Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{frame_base64}",
-                                    "detail": "high"
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o", # Vision requires gpt-4o, not mini
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"""Analyze this lecture frame (timestamp: {timestamp:.1f}s) for detailed pedagogical elements:
+                                    
+                                    1. Eye Contact & Gaze Direction: 
+                                       - Looking directly at camera/students vs reading/looking away
+                                       - Natural vs forced eye contact
+                                       - Consistency of gaze engagement
+                                    
+                                    2. Hand Gestures & Body Language:
+                                       - Purposeful gestures supporting content vs nervous/distracting movements
+                                       - Open, engaging gestures vs closed, defensive postures
+                                       - Gesture variety and naturalness
+                                    
+                                    3. Posture & Positioning:
+                                       - Confident, upright stance vs slouching/poor posture
+                                       - Appropriate positioning relative to camera/audience
+                                       - Movement and spatial awareness
+                                    
+                                    4. Facial Expressions & Engagement:
+                                       - Animated, engaging expressions vs flat/monotone
+                                       - Appropriate emotional expression for content
+                                       - Genuine enthusiasm and interest
+                                    
+                                    5. Professional Appearance:
+                                       - Appropriate dress and grooming
+                                       - Visual presentation quality
+                                       - Overall professional demeanor
+                                    
+                                    Rate each aspect from 1-10 and provide specific observations.
+                                    Return as JSON with keys: eye_contact_score, gestures_score, posture_score, engagement_score, professionalism_score, detailed_observations"""
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{frame_base64}",
+                                        "detail": "high"
+                                    }
                                 }
-                            }
-                        ]
-                    }
-                ],
-                max_completion_tokens=600
-            )
-            
+                            ]
+                        }
+                    ],
+                    max_completion_tokens=600
+                )
+                
                 # Check if response and choices exist
                 if not response or not response.choices or len(response.choices) == 0:
                     raise ValueError("OpenAI API returned empty response or no choices")
