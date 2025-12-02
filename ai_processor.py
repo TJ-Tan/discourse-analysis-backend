@@ -1147,32 +1147,32 @@ Return only the processed transcript with proper punctuation and sentence segmen
             if len(pitch_track) < 10:
                 return {'question_timestamps': []}
             
+            # Convert word_timestamps to dictionaries if needed (do this once at the start)
+            converted_word_timestamps_for_pauses = []
+            if word_timestamps:
+                for word_item in word_timestamps:
+                    if hasattr(word_item, 'word'):
+                        converted_word_timestamps_for_pauses.append({
+                            'word': word_item.word,
+                            'start': getattr(word_item, 'start', 0),
+                            'end': getattr(word_item, 'end', 0)
+                        })
+                    elif isinstance(word_item, dict):
+                        converted_word_timestamps_for_pauses.append(word_item)
+                    else:
+                        converted_word_timestamps_for_pauses.append({
+                            'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                            'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                            'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                        })
+                word_timestamps = converted_word_timestamps_for_pauses
+            
             # Find sentence boundaries from word timestamps
             sentence_end_timestamps = []
             if word_timestamps:
                 # Group words into sentences (look for pauses > 0.8 seconds or punctuation)
                 current_sentence_end = None
                 for i in range(len(word_timestamps) - 1):
-                    # Ensure word_timestamps contains dictionaries
-                    if i == 0:  # Convert on first iteration
-                        converted_word_timestamps_for_pauses = []
-                        for word_item in word_timestamps:
-                            if hasattr(word_item, 'word'):
-                                converted_word_timestamps_for_pauses.append({
-                                    'word': word_item.word,
-                                    'start': getattr(word_item, 'start', 0),
-                                    'end': getattr(word_item, 'end', 0)
-                                })
-                            elif isinstance(word_item, dict):
-                                converted_word_timestamps_for_pauses.append(word_item)
-                            else:
-                                converted_word_timestamps_for_pauses.append({
-                                    'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
-                                    'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
-                                    'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
-                                })
-                        word_timestamps = converted_word_timestamps_for_pauses
-                    
                     current_word = word_timestamps[i]
                     next_word = word_timestamps[i + 1]
                     
