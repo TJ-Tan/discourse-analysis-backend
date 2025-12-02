@@ -577,10 +577,25 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
                     progress = min(int((bytes_written / file.size) * 100), 95)  # Cap at 95% until complete
                     analysis_results[analysis_id]["progress"] = progress
         
+        # Final check for cancellation after upload completes
+        if analysis_id in analysis_results and analysis_results[analysis_id].get("status") == "cancelled":
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(status_code=499, detail="Upload cancelled by user")
+        
         # Verify file was saved correctly
         if not file_path.exists():
             raise HTTPException(status_code=500, detail="Failed to save uploaded file")
+    except HTTPException:
+        # Re-raise HTTP exceptions (including cancellation)
+        raise
     except Exception as e:
+        # Clean up partial file on error
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except:
+                pass
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
     # Check queue status
