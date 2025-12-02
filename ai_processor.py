@@ -356,6 +356,28 @@ class VideoAnalysisProcessor:
         current_sentence = []
         sentence_start_time = None
         
+        # Ensure all word_data items are dictionaries (convert TranscriptionWord objects if needed)
+        converted_words_data = []
+        for word_item in words_data:
+            if hasattr(word_item, 'word'):
+                # It's a TranscriptionWord object - convert to dict
+                converted_words_data.append({
+                    'word': word_item.word,
+                    'start': getattr(word_item, 'start', 0),
+                    'end': getattr(word_item, 'end', 0)
+                })
+            elif isinstance(word_item, dict):
+                converted_words_data.append(word_item)
+            else:
+                # Fallback
+                converted_words_data.append({
+                    'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                    'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                    'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                })
+        
+        words_data = converted_words_data
+        
         for word_data in words_data:
             word = word_data.get('word', '')
             word_start = word_data.get('start', 0)
@@ -866,9 +888,27 @@ class VideoAnalysisProcessor:
         filler_details = []
         filler_timecodes = []
         
+        # Ensure words_data contains dictionaries (convert TranscriptionWord objects if needed)
+        converted_words_for_filler = []
+        for word_item in words_data:
+            if hasattr(word_item, 'word'):
+                converted_words_for_filler.append({
+                    'word': word_item.word,
+                    'start': getattr(word_item, 'start', 0),
+                    'end': getattr(word_item, 'end', 0)
+                })
+            elif isinstance(word_item, dict):
+                converted_words_for_filler.append(word_item)
+            else:
+                converted_words_for_filler.append({
+                    'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                    'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                    'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                })
+        
         for filler in FILLER_WORDS:
             count = 0
-            for word_data in words_data:
+            for word_data in converted_words_for_filler:
                 word = word_data.get('word', '').lower().strip('.,!?')
                 if word == filler:
                     count += 1
@@ -921,7 +961,7 @@ class VideoAnalysisProcessor:
             'duration_minutes': duration_minutes,
             'highlights': highlights,
             'content_structure': content_analysis,
-            'word_timestamps': getattr(transcript_response, 'words', [])
+            'word_timestamps': words_data  # Already converted to dictionaries above
         }
     
     def calculate_voice_variety(self, audio_data: np.ndarray, sample_rate: int) -> float:
@@ -1113,6 +1153,26 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 # Group words into sentences (look for pauses > 0.8 seconds or punctuation)
                 current_sentence_end = None
                 for i in range(len(word_timestamps) - 1):
+                    # Ensure word_timestamps contains dictionaries
+                    if i == 0:  # Convert on first iteration
+                        converted_word_timestamps_for_pauses = []
+                        for word_item in word_timestamps:
+                            if hasattr(word_item, 'word'):
+                                converted_word_timestamps_for_pauses.append({
+                                    'word': word_item.word,
+                                    'start': getattr(word_item, 'start', 0),
+                                    'end': getattr(word_item, 'end', 0)
+                                })
+                            elif isinstance(word_item, dict):
+                                converted_word_timestamps_for_pauses.append(word_item)
+                            else:
+                                converted_word_timestamps_for_pauses.append({
+                                    'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                                    'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                                    'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                                })
+                        word_timestamps = converted_word_timestamps_for_pauses
+                    
                     current_word = word_timestamps[i]
                     next_word = word_timestamps[i + 1]
                     
@@ -1127,9 +1187,27 @@ Return only the processed transcript with proper punctuation and sentence segmen
                         current_sentence_end = current_word.get('end', 0)
                         sentence_end_timestamps.append(current_sentence_end)
                 
+                # Ensure word_timestamps contains dictionaries before accessing
+                converted_word_timestamps_for_sentences = []
+                for word_item in word_timestamps:
+                    if hasattr(word_item, 'word'):
+                        converted_word_timestamps_for_sentences.append({
+                            'word': word_item.word,
+                            'start': getattr(word_item, 'start', 0),
+                            'end': getattr(word_item, 'end', 0)
+                        })
+                    elif isinstance(word_item, dict):
+                        converted_word_timestamps_for_sentences.append(word_item)
+                    else:
+                        converted_word_timestamps_for_sentences.append({
+                            'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                            'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                            'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                        })
+                
                 # Add final word as sentence end
-                if word_timestamps:
-                    sentence_end_timestamps.append(word_timestamps[-1].get('end', 0))
+                if converted_word_timestamps_for_sentences:
+                    sentence_end_timestamps.append(converted_word_timestamps_for_sentences[-1].get('end', 0))
             
             # Analyze pitch at sentence endings for rising intonation
             question_timestamps = []
@@ -1208,7 +1286,25 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 closest_word_idx = None
                 min_time_diff = float('inf')
                 
-                for idx, word_data in enumerate(word_timestamps):
+                # Ensure word_timestamps contains dictionaries
+                converted_word_timestamps = []
+                for word_item in word_timestamps:
+                    if hasattr(word_item, 'word'):
+                        converted_word_timestamps.append({
+                            'word': word_item.word,
+                            'start': getattr(word_item, 'start', 0),
+                            'end': getattr(word_item, 'end', 0)
+                        })
+                    elif isinstance(word_item, dict):
+                        converted_word_timestamps.append(word_item)
+                    else:
+                        converted_word_timestamps.append({
+                            'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                            'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                            'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                        })
+                
+                for idx, word_data in enumerate(converted_word_timestamps):
                     word_end = word_data.get('end', 0)
                     time_diff = abs(word_end - question_time)
                     if time_diff < min_time_diff:
@@ -1216,7 +1312,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                         closest_word_idx = idx
                 
                 if closest_word_idx is not None and min_time_diff < 1.0:  # Within 1 second
-                    word_data = word_timestamps[closest_word_idx]
+                    word_data = converted_word_timestamps[closest_word_idx]
                     word_text = word_data.get('word', '').strip()
                     
                     # Check if word already has punctuation
@@ -1619,6 +1715,28 @@ Return only the processed transcript with proper punctuation and sentence segmen
         if not transcript_text:
             logger.warning("⚠️ No polished transcript text provided for question detection")
             return []
+        
+        # Ensure all word_data items are dictionaries (convert TranscriptionWord objects if needed)
+        converted_words_data = []
+        for word_item in words_data:
+            if hasattr(word_item, 'word'):
+                # It's a TranscriptionWord object - convert to dict
+                converted_words_data.append({
+                    'word': word_item.word,
+                    'start': getattr(word_item, 'start', 0),
+                    'end': getattr(word_item, 'end', 0)
+                })
+            elif isinstance(word_item, dict):
+                converted_words_data.append(word_item)
+            else:
+                # Fallback
+                converted_words_data.append({
+                    'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                    'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                    'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                })
+        
+        words_data = converted_words_data
         
         detected_questions = []
         
