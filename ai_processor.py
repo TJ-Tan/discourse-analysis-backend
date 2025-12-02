@@ -391,7 +391,7 @@ class VideoAnalysisProcessor:
                 # Assign timestamp to all words in current sentence
                 sentence_timestamp = self.format_timestamp(sentence_start_time)
                 for sentence_word_data in current_sentence:
-            timecoded_transcript.append({
+                    timecoded_transcript.append({
                         'word': sentence_word_data['word'],
                         'start': round(sentence_word_data['start'], 2),
                         'end': round(sentence_word_data['end'], 2),
