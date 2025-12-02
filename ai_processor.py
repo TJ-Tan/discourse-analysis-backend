@@ -994,7 +994,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                         }
                     ],
                     temperature=0.1,  # Low temperature for consistency
-                    max_tokens=4000
+                    max_completion_tokens=4000
                 )
                 
                 if response.choices and response.choices[0].message.content:
@@ -1229,7 +1229,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     Return as JSON with keys: content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, key_topics, techniques, improvements, strengths"""
                 }
             ],
-            max_tokens=1200  # Increased token limit for full analysis
+            max_completion_tokens=1200  # Increased token limit for full analysis
         )
         
         try:
@@ -1335,7 +1335,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                             ]
                         }
                     ],
-                    max_tokens=600
+                    max_completion_tokens=600
                 )
                 
                 # Check if response and choices exist
@@ -1493,7 +1493,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                     strengths, improvements, recommendations, overall_effectiveness, detailed_analysis"""
                 }
             ],
-            max_tokens=1400  # Increased for comprehensive analysis
+            max_completion_tokens=1400  # Increased for comprehensive analysis
         )
         
         try:
@@ -1779,7 +1779,7 @@ Return as JSON with:
 Be thorough and accurate in your analysis."""
                 }
             ],
-            max_tokens=3000,  # Increased for comprehensive analysis
+            max_completion_tokens=3000,  # Increased for comprehensive analysis
             temperature=0.3  # Lower temperature for consistent analysis
         )
         
@@ -2015,7 +2015,7 @@ Be thorough and accurate in your analysis."""
                     Return as JSON."""
                 }
             ],
-            max_tokens=1500
+            max_completion_tokens=1500
         )
         
         try:
