@@ -750,6 +750,180 @@ async def delete_analysis(analysis_id: str):
     raise HTTPException(status_code=404, detail="Analysis not found")
 
 # New SSE endpoint
+@app.post("/generate-pdf-summary")
+async def generate_pdf_summary(request: Request, summary_data: dict):
+    """
+    Generate personalized PDF summary with strengths, improvements, and evidence
+    """
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI processor not available")
+    
+    try:
+        from ai_processor import video_processor
+        from openai import OpenAI
+        import json
+        
+        openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        # Extract data from request
+        overall_score = summary_data.get('overall_score', 0)
+        speech_score = summary_data.get('speech_score', 0)
+        body_language_score = summary_data.get('body_language_score', 0)
+        teaching_effectiveness_score = summary_data.get('teaching_effectiveness_score', 0)
+        interaction_score = summary_data.get('interaction_score', 0)
+        presentation_score = summary_data.get('presentation_score', 0)
+        high_level_questions = summary_data.get('high_level_questions', [])
+        total_questions = summary_data.get('total_questions', 0)
+        transcript_excerpt = summary_data.get('transcript_excerpt', '')
+        sample_frames_count = summary_data.get('sample_frames_count', 0)
+        filler_words = summary_data.get('filler_words', [])
+        explanations = summary_data.get('explanations', {})
+        
+        # Prepare high-level questions text
+        questions_text = ""
+        if high_level_questions and len(high_level_questions) > 0:
+            questions_text = "\n\nHigh-Level Questions Asked:\n"
+            for idx, q in enumerate(high_level_questions[:5], 1):
+                question_text = q.get('question', q.get('text', ''))
+                timestamp = q.get('precise_timestamp', q.get('timestamp', ''))
+                questions_text += f"{idx}. [{timestamp}] {question_text}\n"
+        
+        # Prepare filler words text
+        filler_text = ""
+        if filler_words and len(filler_words) > 0:
+            filler_text = f"\n\nFiller Words Detected: {', '.join([f['word'] for f in filler_words[:5]])}"
+        
+        # Find strongest category
+        scores = {
+            'Speech Analysis': speech_score,
+            'Body Language': body_language_score,
+            'Teaching Effectiveness': teaching_effectiveness_score,
+            'Interaction & Engagement': interaction_score,
+            'Presentation Skills': presentation_score
+        }
+        strongest_category = max(scores.items(), key=lambda x: x[1])
+        
+        # Find weakest categories (for improvements)
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+        weakest_categories = sorted_scores[:2] if len(sorted_scores) >= 2 else sorted_scores
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You are an expert educational evaluator creating a personalized feedback summary for a lecture analysis report. Your task is to:
+
+1. Write a personalized feedback paragraph (80-100 words) that:
+   - References the overall score and key findings
+   - Mentions high-level questions as evidence of analytical thinking promotion
+   - Includes at least one actual question from the list provided
+   - Is encouraging yet constructive
+
+2. Identify ONE strongest strength with:
+   - Clear title
+   - Description explaining why it's a strength
+   - Evidence from transcript or analysis (quote or specific metric)
+
+3. Identify 1-2 areas for improvement with:
+   - Area name
+   - Specific recommendation
+   - Evidence from scoring/metrics
+
+Be specific, evidence-based, and professional. Use British English spelling."""
+                },
+                {
+                    "role": "user",
+                    "content": f"""Generate a personalized PDF summary for this lecture analysis.
+
+Overall Score: {overall_score}/10
+
+Category Scores:
+- Speech Analysis: {speech_score}/10
+- Body Language: {body_language_score}/10
+- Teaching Effectiveness: {teaching_effectiveness_score}/10
+- Interaction & Engagement: {interaction_score}/10
+- Presentation Skills: {presentation_score}/10
+
+Strongest Category: {strongest_category[0]} ({strongest_category[1]}/10)
+Weakest Categories: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
+
+Total Questions Asked: {total_questions}
+{questions_text}
+
+Transcript Excerpt (first 2000 chars):
+{transcript_excerpt[:2000]}
+
+Sample Frames Extracted: {sample_frames_count}
+{filler_text}
+
+Return as JSON with:
+- personalized_feedback: string (80-100 words paragraph)
+- strongest_strength: {{"title": string, "description": string, "evidence": string}}
+- improvements: [{{"area": string, "description": string, "evidence": string}}, ...] (1-2 items)
+
+Ensure the personalized_feedback includes at least one high-level question as evidence."""
+                }
+            ],
+            max_tokens=1500,
+            temperature=0.7
+        )
+        
+        try:
+            summary_content = response.choices[0].message.content
+            if not summary_content:
+                raise ValueError("AI response content is None or empty")
+            
+            summary = json.loads(summary_content)
+            
+            # Ensure all required fields exist
+            if 'personalized_feedback' not in summary:
+                summary['personalized_feedback'] = f"This lecture achieved an overall score of {overall_score}/10, demonstrating effective teaching techniques."
+            
+            if 'strongest_strength' not in summary:
+                summary['strongest_strength'] = {
+                    'title': strongest_category[0],
+                    'description': f'Strong performance in {strongest_category[0].lower()} with a score of {strongest_category[1]}/10.',
+                    'evidence': f'Score of {strongest_category[1]}/10 in {strongest_category[0]}'
+                }
+            
+            if 'improvements' not in summary or len(summary['improvements']) == 0:
+                summary['improvements'] = [{
+                    'area': weakest_categories[0][0],
+                    'description': f'Consider focusing on improving {weakest_categories[0][0].lower()} which scored {weakest_categories[0][1]}/10.',
+                    'evidence': f'Current score: {weakest_categories[0][1]}/10'
+                }]
+            
+            return JSONResponse(content={'summary': summary})
+            
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
+            # Fallback summary
+            fallback_summary = {
+                'personalized_feedback': f"This lecture achieved an overall score of {overall_score}/10. The instructor demonstrated effective teaching techniques with {total_questions} questions asked throughout the session{f', including high-level questions that promote analytical thinking' if high_level_questions else ''}.",
+                'strongest_strength': {
+                    'title': strongest_category[0],
+                    'description': f'Strong performance in {strongest_category[0].lower()} with a score of {strongest_category[1]}/10.',
+                    'evidence': f'Score of {strongest_category[1]}/10 in {strongest_category[0]}'
+                },
+                'improvements': [{
+                    'area': weakest_categories[0][0],
+                    'description': f'Consider focusing on improving {weakest_categories[0][0].lower()} which scored {weakest_categories[0][1]}/10.',
+                    'evidence': f'Current score: {weakest_categories[0][1]}/10'
+                }]
+            }
+            if len(weakest_categories) > 1:
+                fallback_summary['improvements'].append({
+                    'area': weakest_categories[1][0],
+                    'description': f'Additionally, {weakest_categories[1][0].lower()} could be enhanced (score: {weakest_categories[1][1]}/10).',
+                    'evidence': f'Current score: {weakest_categories[1][1]}/10'
+                })
+            
+            return JSONResponse(content={'summary': fallback_summary})
+            
+    except Exception as e:
+        print(f"Error generating PDF summary: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF summary: {str(e)}")
+
 @app.get("/stream/{analysis_id}")
 async def stream_progress(analysis_id: str):
     """
