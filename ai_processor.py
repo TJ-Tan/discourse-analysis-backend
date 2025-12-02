@@ -291,10 +291,13 @@ class VideoAnalysisProcessor:
         duration_hours = duration_minutes / 60
         
         # Determine frame extraction interval based on video duration
-        # 1. If video < 1 hour: extract every 1 minute (60 seconds)
-        # 2. If video 1-2 hours: extract every 2 minutes (120 seconds)
-        # 3. Maximum 60 frames for any video
-        if duration_hours < 1.0:
+        # 1. If video < 1 minute: extract every 20 seconds
+        # 2. If video < 1 hour: extract every 1 minute (60 seconds)
+        # 3. If video 1-2 hours: extract every 2 minutes (120 seconds)
+        # 4. Maximum 60 frames for any video
+        if duration_minutes < 1.0:
+            frame_interval_seconds = 20  # 20 seconds for videos < 1 minute
+        elif duration_hours < 1.0:
             frame_interval_seconds = 60  # 1 minute
         else:
             frame_interval_seconds = 120  # 2 minutes
