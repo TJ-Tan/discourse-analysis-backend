@@ -749,8 +749,8 @@ class VideoAnalysisProcessor:
         
         await self.progress_callback(self.analysis_id, 42, f"📝 Full transcript length: {len(transcript_text)} characters")
         
-        # Post-process transcript with GPT-4o-mini for punctuation and sentence segmentation
-        logger.info("📝 Post-processing transcript with GPT-4o-mini for punctuation and sentence segmentation...")
+        # Post-process transcript with GPT-5-nano for punctuation and sentence segmentation
+        logger.info("📝 Post-processing transcript with GPT-5-nano for punctuation and sentence segmentation...")
         await self.progress_callback(self.analysis_id, 42.5, "📝 Post-processing transcript for proper punctuation and sentence segmentation...")
         transcript_text = await self.post_process_transcript_with_gpt(transcript_text)
         logger.info("✅ Transcript post-processing complete")
@@ -938,14 +938,14 @@ class VideoAnalysisProcessor:
     
     async def post_process_transcript_with_gpt(self, raw_transcript: str) -> str:
         """
-        Post-process raw Whisper transcript with GPT-4o-mini to:
+        Post-process raw Whisper transcript with GPT-5-nano to:
         - Add proper punctuation (commas, periods, question marks)
         - Segment into natural sentences
         - Preserve original meaning
         - Do not rewrite or improve wording
         """
         try:
-            # Split transcript into chunks if too long (GPT-4o-mini has token limits)
+            # Split transcript into chunks if too long (GPT-5-nano has token limits)
             max_chunk_length = 8000  # Conservative limit to leave room for prompt and response
             chunks = []
             
@@ -967,7 +967,7 @@ class VideoAnalysisProcessor:
                     logger.info(f"📝 Processing transcript chunk {idx + 1}/{len(chunks)}...")
                 
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-5-nano",
                     messages=[
                         {
                             "role": "system",
@@ -1192,7 +1192,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         logger.info(f"📊 Analyzing full transcript: {len(full_transcript)} characters")
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
@@ -1453,7 +1453,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         """
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
@@ -1718,7 +1718,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         
         # Step 3: AI analysis to identify high-level questions and calculate scores
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
@@ -1975,7 +1975,7 @@ Be thorough and accurate in your analysis."""
         evidence_quotes = self.extract_evidence_from_transcript(transcript)
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",

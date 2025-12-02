@@ -504,22 +504,6 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     """
     Upload a lecture video for enhanced AI-powered analysis with queue management
     """
-    # Validate passkey if configured
-    expected_passkey = os.getenv('MARS_PASSKEY', '')
-    if expected_passkey:
-        # Get passkey from form data (multipart/form-data)
-        try:
-            form_data = await request.form()
-            provided_passkey = form_data.get('passkey', '')
-        except:
-            provided_passkey = None
-        
-        if not provided_passkey or provided_passkey != expected_passkey:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid or missing passkey. Please verify your passkey."
-            )
-    
     # Get client IP address
     client_ip = request.client.host if request.client else "unknown"
     # Try to get real IP from headers (for proxies/load balancers)
@@ -845,7 +829,7 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         weakest_categories = sorted_scores[:2] if len(sorted_scores) >= 2 else sorted_scores
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
