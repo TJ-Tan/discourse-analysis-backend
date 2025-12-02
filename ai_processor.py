@@ -495,13 +495,33 @@ class VideoAnalysisProcessor:
                 chunk_text = chunk_response.text
                 chunk_words = getattr(chunk_response, 'words', [])
                 
-                # Adjust word timestamps to global timeline
+                # Convert TranscriptionWord objects to dictionaries and adjust timestamps
+                converted_chunk_words = []
                 for word_data in chunk_words:
-                    word_data['start'] += chunk_start_time
-                    word_data['end'] += chunk_start_time
+                    if hasattr(word_data, 'word'):
+                        # It's a TranscriptionWord object - convert to dict
+                        converted_chunk_words.append({
+                            'word': word_data.word,
+                            'start': getattr(word_data, 'start', 0) + chunk_start_time,
+                            'end': getattr(word_data, 'end', 0) + chunk_start_time
+                        })
+                    elif isinstance(word_data, dict):
+                        # Already a dictionary - adjust timestamps
+                        word_data['start'] += chunk_start_time
+                        word_data['end'] += chunk_start_time
+                        converted_chunk_words.append(word_data)
+                    else:
+                        # Fallback
+                        start = word_data.get('start', 0) if isinstance(word_data, dict) else getattr(word_data, 'start', 0)
+                        end = word_data.get('end', 0) if isinstance(word_data, dict) else getattr(word_data, 'end', 0)
+                        converted_chunk_words.append({
+                            'word': word_data.get('word', '') if isinstance(word_data, dict) else getattr(word_data, 'word', ''),
+                            'start': start + chunk_start_time,
+                            'end': end + chunk_start_time
+                        })
                 
                 all_transcripts.append(chunk_text)
-                all_words.extend(chunk_words)
+                all_words.extend(converted_chunk_words)
                 
                 logger.info(f"✅ Chunk {chunk_count} transcribed: {len(chunk_text)} chars")
                 
@@ -638,12 +658,33 @@ class VideoAnalysisProcessor:
                             chunk_text = chunk_response.text
                             chunk_words = getattr(chunk_response, 'words', [])
                             
+                            # Convert TranscriptionWord objects to dictionaries and adjust timestamps
+                            converted_chunk_words = []
                             for word_data in chunk_words:
-                                word_data['start'] += start_time
-                                word_data['end'] += start_time
+                                if hasattr(word_data, 'word'):
+                                    # It's a TranscriptionWord object - convert to dict
+                                    converted_chunk_words.append({
+                                        'word': word_data.word,
+                                        'start': getattr(word_data, 'start', 0) + start_time,
+                                        'end': getattr(word_data, 'end', 0) + start_time
+                                    })
+                                elif isinstance(word_data, dict):
+                                    # Already a dictionary - adjust timestamps
+                                    word_data['start'] += start_time
+                                    word_data['end'] += start_time
+                                    converted_chunk_words.append(word_data)
+                                else:
+                                    # Fallback
+                                    start = word_data.get('start', 0) if isinstance(word_data, dict) else getattr(word_data, 'start', 0)
+                                    end = word_data.get('end', 0) if isinstance(word_data, dict) else getattr(word_data, 'end', 0)
+                                    converted_chunk_words.append({
+                                        'word': word_data.get('word', '') if isinstance(word_data, dict) else getattr(word_data, 'word', ''),
+                                        'start': start + start_time,
+                                        'end': end + start_time
+                                    })
                             
                             all_transcripts.append(chunk_text)
-                            all_words.extend(chunk_words)
+                            all_words.extend(converted_chunk_words)
                             
                             logger.info(f"✅ Chunk {chunk_count} transcribed: {len(chunk_text)} chars")
                             chunk_success = True
@@ -770,6 +811,29 @@ class VideoAnalysisProcessor:
             if words_data is None:
                 words_data = []
             
+            # Convert TranscriptionWord objects to dictionaries if needed
+            # Whisper API returns TranscriptionWord objects with attributes, not dicts
+            converted_words_data = []
+            for word_item in words_data:
+                if hasattr(word_item, 'word'):
+                    # It's a TranscriptionWord object - convert to dict
+                    converted_words_data.append({
+                        'word': word_item.word,
+                        'start': getattr(word_item, 'start', 0),
+                        'end': getattr(word_item, 'end', 0)
+                    })
+                elif isinstance(word_item, dict):
+                    # Already a dictionary
+                    converted_words_data.append(word_item)
+                else:
+                    # Fallback: try to access as dict or object
+                    converted_words_data.append({
+                        'word': word_item.get('word', '') if isinstance(word_item, dict) else getattr(word_item, 'word', ''),
+                        'start': word_item.get('start', 0) if isinstance(word_item, dict) else getattr(word_item, 'start', 0),
+                        'end': word_item.get('end', 0) if isinstance(word_item, dict) else getattr(word_item, 'end', 0)
+                    })
+            
+            words_data = converted_words_data
             logger.info(f"📊 Word timestamps available: {len(words_data)} words")
         except Exception as e:
             logger.warning(f"⚠️ Error extracting word timestamps: {e}")
