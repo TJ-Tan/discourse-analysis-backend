@@ -535,13 +535,18 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     analysis_id = str(uuid.uuid4())
     
     # Register this upload in analysis_results for tracking
+    import pytz
+    singapore_tz = pytz.timezone('Asia/Singapore')
+    singapore_time = datetime.now().astimezone(singapore_tz)
+    
     analysis_results[analysis_id] = {
         "status": "uploading",
         "progress": 0,
         "message": "Uploading video file...",
-        "started_at": datetime.now().astimezone(pytz.timezone('Asia/Singapore')).isoformat(),
+        "started_at": singapore_time.isoformat(),
         "client_ip": client_ip,
-        "filename": file.filename
+        "filename": file.filename,
+        "file_size": getattr(file, 'size', None)
     }
     
     # Save the uploaded file (always save, even if queued)
@@ -634,13 +639,18 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         }
         
-        return {
+        response_data = {
             "analysis_id": analysis_id,
             "status": "queued",
             "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
             "queue_position": len(job_queue),
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
         }
+        response = JSONResponse(content=response_data)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
     
     # Immediate processing (not queued)
     # Get current configuration for analysis
@@ -675,10 +685,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     # Immediately log initialization
     print(f"🎯 INITIALIZED with {len(analysis_results[analysis_id]['log_messages'])} messages")
     
-    # Add initial log message with Singapore time
-    import pytz
-    singapore_tz = pytz.timezone('Asia/Singapore')
-    singapore_time = datetime.now().astimezone(singapore_tz)
+    # Add initial log message with Singapore time (reuse singapore_time from above)
     analysis_results[analysis_id]["log_messages"].append({
         "timestamp": singapore_time.isoformat(),
         "message": "File uploaded successfully. Starting enhanced AI analysis...",
@@ -691,8 +698,9 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     else:
         background_tasks.add_task(process_video_mock_enhanced, analysis_id, file_path)
     
-    return {
+    response_data = {
         "analysis_id": analysis_id,
+        "status": "processing",
         "message": "Video uploaded successfully. Enhanced AI analysis started.",
         "filename": file.filename,
         "estimated_time": "4-7 minutes" if AI_AVAILABLE else "15 seconds (mock)",
@@ -704,6 +712,11 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
             "Weighted sub-component calculation"
         ]
     }
+    response = JSONResponse(content=response_data)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 @app.get("/analysis-status/{analysis_id}")
 async def get_analysis_status(analysis_id: str):
