@@ -1097,8 +1097,8 @@ Raw transcript:
 Return only the processed transcript with proper punctuation and sentence segmentation. Do not include any explanations or additional text."""
                         }
                     ],
-                    temperature=0.1,  # Low temperature for consistency
                     max_completion_tokens=4000
+                    # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
                 )
                 
                 if response.choices and response.choices[0].message.content:
@@ -1961,8 +1961,8 @@ Then calculate:
 Be thorough and accurate in your analysis."""
                 }
             ],
-            max_completion_tokens=3000,  # Increased for comprehensive analysis
-            temperature=0.3  # Lower temperature for consistent analysis
+            max_completion_tokens=3000  # Increased for comprehensive analysis
+            # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
         
         try:

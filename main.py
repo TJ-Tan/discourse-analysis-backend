@@ -977,8 +977,8 @@ Return as JSON with:
 Ensure the personalized_feedback includes at least one high-level question as evidence."""
                 }
             ],
-            max_completion_tokens=1500,
-            temperature=0.7
+            max_completion_tokens=1500
+            # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
         
         try:
