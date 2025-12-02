@@ -1912,17 +1912,17 @@ Be thorough and accurate in your analysis."""
                 }
             else:
                 # Some pattern-matched questions found
-            return {
-                'score': 6.5,
-                'interaction_frequency': 6.5,
-                'question_quality': 6.5,
-                'student_engagement_opportunities': 6.5,
-                'cognitive_level': 'medium',
+                return {
+                    'score': 6.5,
+                    'interaction_frequency': 6.5,
+                    'question_quality': 6.5,
+                    'student_engagement_opportunities': 6.5,
+                    'cognitive_level': 'medium',
                     'high_level_questions': fallback_questions,
-                'interaction_moments': [],
+                    'interaction_moments': [],
                     'total_questions': total_questions,
-                'total_interactions': 0
-            }
+                    'total_interactions': 0
+                }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
         """
