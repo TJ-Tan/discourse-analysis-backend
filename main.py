@@ -534,13 +534,48 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     # Generate unique ID for this analysis
     analysis_id = str(uuid.uuid4())
     
+    # Register this upload in analysis_results for tracking
+    analysis_results[analysis_id] = {
+        "status": "uploading",
+        "progress": 0,
+        "message": "Uploading video file...",
+        "started_at": datetime.now().astimezone(pytz.timezone('Asia/Singapore')).isoformat(),
+        "client_ip": client_ip,
+        "filename": file.filename
+    }
+    
     # Save the uploaded file (always save, even if queued)
     file_path = UPLOAD_DIR / f"{analysis_id}_{file.filename}"
     
     try:
-        # Save file to disk
+        # Check for cancellation before starting upload
+        if analysis_id in analysis_results and analysis_results[analysis_id].get("status") == "cancelled":
+            raise HTTPException(status_code=499, detail="Upload cancelled")
+        
+        # Save file to disk with cancellation check
+        bytes_written = 0
+        chunk_size = 1024 * 1024  # 1MB chunks for progress tracking
+        
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while True:
+                # Check for cancellation during upload
+                if analysis_id in analysis_results and analysis_results[analysis_id].get("status") == "cancelled":
+                    # Clean up partial file
+                    if file_path.exists():
+                        file_path.unlink()
+                    raise HTTPException(status_code=499, detail="Upload cancelled by user")
+                
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                
+                buffer.write(chunk)
+                bytes_written += len(chunk)
+                
+                # Update progress (rough estimate based on file size if available)
+                if hasattr(file, 'size') and file.size:
+                    progress = min(int((bytes_written / file.size) * 100), 95)  # Cap at 95% until complete
+                    analysis_results[analysis_id]["progress"] = progress
         
         # Verify file was saved correctly
         if not file_path.exists():
@@ -710,33 +745,49 @@ async def stop_analysis(analysis_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to stop analysis: {str(e)}")
 
 @app.post("/cancel-upload/{analysis_id}")
-async def cancel_upload(analysis_id: str):
+async def cancel_upload(analysis_id: str, request: Request = None):
     """
     Cancel an upload and clean up any partial files
+    Can be called during upload or after upload completes
     """
     try:
-        # Remove from queue if present
-        job_queue[:] = [job for job in job_queue if job.get("analysis_id") != analysis_id]
-        
-        # Clean up any uploaded files
-        for file_path in UPLOAD_DIR.glob(f"{analysis_id}_*"):
-            try:
-                file_path.unlink()
-                print(f"🗑️ Deleted partial upload: {file_path}")
-            except Exception as e:
-                print(f"⚠️ Failed to delete {file_path}: {e}")
-        
-        # Remove from analysis results if present
+        # Mark as cancelled immediately to stop ongoing upload
         if analysis_id in analysis_results:
             analysis_results[analysis_id]["status"] = "cancelled"
             analysis_results[analysis_id]["message"] = "Upload cancelled by user"
+            import pytz
+            singapore_tz = pytz.timezone('Asia/Singapore')
+            analysis_results[analysis_id]["cancelled_at"] = datetime.now().astimezone(singapore_tz).isoformat()
+        
+        # Remove from queue if present
+        job_queue[:] = [job for job in job_queue if job.get("analysis_id") != analysis_id]
+        
+        # Clean up any uploaded files (partial or complete)
+        deleted_files = []
+        for file_path in UPLOAD_DIR.glob(f"{analysis_id}_*"):
+            try:
+                file_path.unlink()
+                deleted_files.append(str(file_path))
+                print(f"🗑️ Deleted file: {file_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete {file_path}: {e}")
+        
+        # Clean up temp processing files
+        temp_dir = Path("temp_processing")
+        if temp_dir.exists():
+            for temp_file in temp_dir.glob(f"{analysis_id}_*"):
+                try:
+                    temp_file.unlink()
+                    print(f"🗑️ Deleted temp file: {temp_file}")
+                except Exception as e:
+                    print(f"⚠️ Failed to delete temp file {temp_file}: {e}")
         
         # Remove from running processes if present
         if analysis_id in running_processes:
             running_processes[analysis_id]["should_stop"] = True
             del running_processes[analysis_id]
         
-        print(f"🛑 Upload {analysis_id} cancelled and cleaned up")
+        print(f"🛑 Upload {analysis_id} cancelled and cleaned up ({len(deleted_files)} files deleted)")
         
         return {
             "success": True,
