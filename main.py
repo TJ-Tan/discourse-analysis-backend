@@ -87,6 +87,18 @@ async def options_handler(request: Request):
         }
     )
 
+# Exception handler to add CORS headers to all error responses
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 # Pydantic models for configuration
 class ConfigurationUpdate(BaseModel):
     category_weights: Optional[Dict[str, float]] = None
