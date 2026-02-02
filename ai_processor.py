@@ -791,14 +791,14 @@ class VideoAnalysisProcessor:
             await self.progress_callback(self.analysis_id, 35, "📄 Processing audio file directly (English)...")
             
             # Process directly with English language enforcement (raw transcription, no punctuation prompt)
-        with open(audio_path, "rb") as audio_file:
-            transcript_response = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="verbose_json",
+            with open(audio_path, "rb") as audio_file:
+                transcript_response = openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="verbose_json",
                     timestamp_granularities=["word"],
                     language="en"  # Force English transcription (no punctuation prompt - get raw text)
-            )
+                )
         
         await self.progress_callback(self.analysis_id, 40, "✅ Whisper transcription complete")
         
