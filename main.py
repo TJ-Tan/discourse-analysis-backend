@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import os
@@ -861,6 +861,22 @@ async def delete_analysis(analysis_id: str):
     
     raise HTTPException(status_code=404, detail="Analysis not found")
 
+
+@app.get("/analysis/{analysis_id}/questions-excel")
+async def download_questions_excel(analysis_id: str):
+    """
+    Download the question list Excel file (ICAP: Interactive / Constructive / Active / Passive).
+    Available after analysis completes; filename is analysis_id_questions.xlsx.
+    """
+    if analysis_id not in analysis_results:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    filename = f"{analysis_id}_questions.xlsx"
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Questions Excel not found. Run analysis first.")
+    return FileResponse(path=file_path, filename=filename, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 # New SSE endpoint
 @app.post("/generate-pdf-summary")
 async def generate_pdf_summary(request: Request, summary_data: dict):
@@ -1282,6 +1298,20 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                 "results": results,
                 "processing_time": "Real AI analysis complete"
             })
+            # Export question list to Excel (ICAP: Interactive/Constructive/Active/Passive)
+            try:
+                from ai_processor import export_questions_to_excel
+                interaction = results.get("interaction_engagement") or {}
+                all_questions = interaction.get("all_questions", [])
+                if all_questions:
+                    excel_path = UPLOAD_DIR / f"{analysis_id}_questions.xlsx"
+                    if export_questions_to_excel(all_questions, excel_path):
+                        analysis_results[analysis_id]["questions_excel_filename"] = f"{analysis_id}_questions.xlsx"
+                        if isinstance(analysis_results[analysis_id].get("results"), dict):
+                            ie = analysis_results[analysis_id]["results"].setdefault("interaction_engagement", {})
+                            ie["questions_excel_filename"] = f"{analysis_id}_questions.xlsx"
+            except Exception as excel_e:
+                print(f"Question Excel export skipped: {excel_e}")
             
             # Broadcast completion via WebSocket
             await manager.send_update(analysis_id, {

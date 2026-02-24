@@ -15,6 +15,13 @@ import logging
 from dotenv import load_dotenv
 from datetime import datetime
 
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
+
 
 
 # Import enhanced configuration
@@ -1898,71 +1905,47 @@ Return only the processed transcript with proper punctuation and sentence segmen
         else:
             all_questions_text = "\n\nNo questions detected (ending with ?)."
         
-        # Step 3: AI analysis to identify high-level questions and calculate scores
+        # Step 3: AI analysis with ICAP classification (Interactive / Constructive / Active / Passive)
+        # ICAP framework (Chi & Wylie): Passive < Active < Constructive < Interactive in cognitive engagement
         response = openai_client.chat.completions.create(
             model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert in educational interaction analysis and pedagogical assessment. Your task is to:
+                    "content": """You are an expert in educational interaction analysis using the ICAP framework (Cognitive Engagement Levels). Classify each question into exactly ONE of these four levels:
 
-1. Analyze ALL questions provided (they all end with ?)
-2. Identify which questions are HIGH-LEVEL pedagogically (require analysis, evaluation, synthesis, critical thinking)
-3. Classify question types
-4. Calculate interaction and engagement scores based on the questions
+ICAP levels (use exactly these labels):
+- "Passive": Rhetorical, minimal cognitive demand (e.g., "Right?", "Okay?", "See?"). Expects no real answer.
+- "Active": Recall, factual (e.g., "What is photosynthesis?", "Who wrote this?", "When did it happen?"). Single or short factual answer.
+- "Constructive": Reasoning, explanation (e.g., "Why does this happen?", "How would you explain...?", "What is the cause?"). Requires building or generating an explanation.
+- "Interactive": Co-construction, dialogue (e.g., "Do you agree with her? Why?", "What would you add?", "How does that compare to...?"). Requires building on others' ideas or peer exchange.
 
-HIGH-LEVEL questions are those that:
-- Require analysis, evaluation, or synthesis (e.g., "Why do you think...", "How would you...", "What if...", "What are the implications of...")
-- Promote critical thinking and deeper understanding
-- Are open-ended and encourage discussion
-- Go beyond simple factual recall
+Rules:
+- Each question must get exactly one label: Passive, Active, Constructive, or Interactive.
+- Prefer Constructive over Active if the question invites reasoning (why/how/explain).
+- Prefer Interactive if it explicitly references others' ideas, comparison, or building on answers.
+- Yes/no or clarification ("Any questions?", "Clear?") are Passive unless they invite elaboration.
 
-NOT high-level questions:
-- Simple factual questions (e.g., "What is X?", "Who did Y?")
-- Yes/No questions (e.g., "Do you understand?", "Is that clear?")
-- Clarification questions (e.g., "Any questions?", "Does that make sense?")
-- Rhetorical questions that don't require deep thinking
-
-Classify each question as:
-- "high_level": Requires analysis, evaluation, synthesis, critical thinking
-- "clarification": Seeks understanding or confirmation
-- "rhetorical": Engages thinking but doesn't expect detailed answers
-- "direct": Simple factual questions
-- "low_level": Basic recall or yes/no questions"""
+Return JSON with:
+- all_questions_analyzed: list of {"question": str (exact text), "icap": str ("Passive"|"Active"|"Constructive"|"Interactive")}
+- total_questions: int
+- count_passive: int
+- count_active: int
+- count_constructive: int
+- count_interactive: int"""
                 },
                 {
                     "role": "user",
-                    "content": f"""Analyze the following questions from a lecture transcript. All questions below end with a question mark (?).
+                    "content": f"""Classify each of the following questions from a lecture transcript using ICAP (Passive / Active / Constructive / Interactive). All items below end with a question mark (?).
 
 {all_questions_text}
 
-For each question, determine:
-1. Is it a HIGH-LEVEL question pedagogically? (requires analysis, evaluation, synthesis, critical thinking)
-2. What type is it? (high_level, clarification, rhetorical, direct, low_level)
+For each question, set "icap" to exactly one of: Passive, Active, Constructive, Interactive.
 
-Then calculate:
-- Total number of questions
-- Number of high-level questions
-- Interaction frequency score (1-10): Based on total number of questions and frequency throughout the lecture
-- Question quality score (1-10): Based on the proportion of high-level questions and their pedagogical value
-- Student engagement opportunities score (1-10): Based on opportunities for student participation and interaction
-- Overall cognitive level: "low", "medium", or "high" based on the proportion of high-level questions
-                    
-                    Return as JSON with:
-- all_questions_analyzed: list of {{"question": str (exact text), "is_high_level": bool, "type": str, "cognitive_level": str ("low"/"medium"/"high")}}
-- total_questions: int
-- high_level_questions_count: int
-- high_level_questions: list of {{"question": str, "type": str, "cognitive_level": str}} (only high-level ones)
-- interaction_frequency: float (1-10)
-- question_quality: float (1-10)
-- student_engagement_opportunities: float (1-10)
-- cognitive_level: str ("low"/"medium"/"high")
-
-Be thorough and accurate in your analysis."""
+Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exact text>", "icap": "<Passive|Active|Constructive|Interactive>"}}), total_questions, count_passive, count_active, count_constructive, count_interactive."""
                 }
             ],
-            max_completion_tokens=3000  # Increased for comprehensive analysis
-            # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
+            max_completion_tokens=3000
         )
         
         try:
@@ -1973,14 +1956,22 @@ Be thorough and accurate in your analysis."""
             
             analysis = json.loads(response_content)
             
-            # Step 4: Process AI analysis results
+            # Step 4: Process AI analysis results (ICAP counts)
             all_questions_analyzed = analysis.get('all_questions_analyzed', [])
             total_questions = analysis.get('total_questions', len(all_questions))
-            high_level_questions_count = analysis.get('high_level_questions_count', 0)
-            high_level_questions_list = analysis.get('high_level_questions', [])
+            count_passive = analysis.get('count_passive', 0)
+            count_active = analysis.get('count_active', 0)
+            count_constructive = analysis.get('count_constructive', 0)
+            count_interactive = analysis.get('count_interactive', 0)
+            
+            # Normalize ICAP from analysis if counts not provided
+            if total_questions > 0 and (count_passive + count_active + count_constructive + count_interactive) != total_questions:
+                count_passive = sum(1 for q in all_questions_analyzed if (q.get('icap') or '').strip().lower() == 'passive')
+                count_active = sum(1 for q in all_questions_analyzed if (q.get('icap') or '').strip().lower() == 'active')
+                count_constructive = sum(1 for q in all_questions_analyzed if (q.get('icap') or '').strip().lower() == 'constructive')
+                count_interactive = sum(1 for q in all_questions_analyzed if (q.get('icap') or '').strip().lower() == 'interactive')
             
             # Step 5: Match questions to timestamps from pattern-matched questions
-            # Create a mapping of question text to timestamp from pattern-matched questions
             question_timestamp_map = {}
             for q in all_questions:
                 question_text_clean = q['question'].strip().lower()
@@ -1989,27 +1980,29 @@ Be thorough and accurate in your analysis."""
                     'timestamp': self.format_timestamp(q['start_time'])
                 }
             
-            # Step 6: Build final question lists with timestamps
+            # Step 6: Build final question list with ICAP and timestamps
             final_all_questions = []
-            final_high_level_questions = []
+            high_level_questions = []  # Constructive + Interactive for backward compatibility
             
             for analyzed_q in all_questions_analyzed:
                 question_text = analyzed_q.get('question', '').strip()
-                is_high_level = analyzed_q.get('is_high_level', False)
-                question_type = analyzed_q.get('type', 'direct')
-                cognitive_level = analyzed_q.get('cognitive_level', 'medium')
+                icap_raw = (analyzed_q.get('icap') or 'Active').strip()
+                # Normalize to exactly one of Passive, Active, Constructive, Interactive
+                icap = 'Passive' if icap_raw.lower() == 'passive' else (
+                    'Active' if icap_raw.lower() == 'active' else (
+                        'Constructive' if icap_raw.lower() == 'constructive' else (
+                            'Interactive' if icap_raw.lower() == 'interactive' else 'Active'
+                        )
+                    )
+                )
                 
-                # Find timestamp from pattern-matched questions
                 question_text_clean = question_text.lower()
                 timestamp_info = question_timestamp_map.get(question_text_clean)
-                
                 if timestamp_info:
                     timestamp = timestamp_info['timestamp']
                     start_time = timestamp_info['start_time']
                 else:
-                    # Try fuzzy matching if exact match not found
-                    timestamp = "00:00"
-                    start_time = 0
+                    timestamp, start_time = "00:00", 0
                     for q in all_questions:
                         if question_text.lower()[:30] in q['question'].lower()[:50] or q['question'].lower()[:30] in question_text.lower()[:50]:
                             timestamp = self.format_timestamp(q['start_time'])
@@ -2020,35 +2013,63 @@ Be thorough and accurate in your analysis."""
                     'question': question_text,
                     'precise_timestamp': timestamp,
                     'start_time': start_time,
-                    'type': question_type,
-                    'cognitive_level': cognitive_level,
-                    'is_high_level': is_high_level
+                    'icap': icap,
+                    'is_high_level': icap in ('Constructive', 'Interactive')
                 }
-                
                 final_all_questions.append(question_entry)
-                
-                # Add to high-level list if marked as high-level
-                if is_high_level:
-                    final_high_level_questions.append(question_entry)
+                if question_entry['is_high_level']:
+                    high_level_questions.append(question_entry)
             
-            # Step 7: Calculate scores from AI analysis
-            interaction_frequency = analysis.get('interaction_frequency', 5.0)
-            question_quality = analysis.get('question_quality', 5.0)
-            student_engagement_opportunities = analysis.get('student_engagement_opportunities', 5.0)
-            cognitive_level = analysis.get('cognitive_level', 'medium')
+            high_level_questions_count = count_constructive + count_interactive
             
-            # Adjust scores if no questions detected
+            # Step 7: Quantify metrics to match current rubric (1-10) using ICAP / document logic
+            # CLI = Cognitive Level Index: (2*%Constructive + 3*%Interactive)/3, scale 0-100 (doc)
+            # Map CLI 0-100 -> question_quality 1-10. Target ranges: Passive <10%, Active 30-50%, Constructive 25-40%, Interactive 10-20%
+            duration_minutes = max(0.1, speech_analysis.get('duration_minutes', 1))
+            effective_minutes = duration_minutes
+            
             if total_questions == 0:
                 interaction_frequency = 3.0
                 question_quality = 3.0
                 student_engagement_opportunities = 3.0
                 cognitive_level = 'low'
-            elif high_level_questions_count == 0 and total_questions > 0:
-                # Some questions but none are high-level
-                question_quality = max(3.0, question_quality - 2.0)  # Reduce quality score
-                cognitive_level = 'low' if cognitive_level == 'high' else cognitive_level
+            else:
+                pct_passive = count_passive / total_questions
+                pct_active = count_active / total_questions
+                pct_constructive = count_constructive / total_questions
+                pct_interactive = count_interactive / total_questions
+                # CLI = (2 * %Constructive + 3 * %Interactive) / 3  (weighted; max when all Interactive = 1.0)
+                cli_raw = (2 * pct_constructive + 3 * pct_interactive) / 3.0  # 0 to 1
+                cli_100 = cli_raw * 100
+                # question_quality 1-10 from CLI: 0 -> 3, 100 -> 9.5
+                question_quality = 3.0 + (cli_100 / 100.0) * 6.5
+                question_quality = round(min(10.0, max(1.0, question_quality)), 1)
+                
+                # Question density (questions per minute) -> interaction_frequency 1-10
+                qd = total_questions / effective_minutes
+                # 0.5-2 Q/min = good; <0.2 = low; >3 = very high
+                if qd >= 2.0:
+                    interaction_frequency = min(10.0, 7.0 + (qd - 2) * 0.5)
+                elif qd >= 0.5:
+                    interaction_frequency = 4.0 + (qd - 0.2) / 0.3  # ~4 to 8
+                elif qd >= 0.2:
+                    interaction_frequency = 3.5 + (qd - 0.2) / 0.3 * 2.5
+                else:
+                    interaction_frequency = max(1.0, 3.0 + qd * 5)
+                interaction_frequency = round(min(10.0, max(1.0, interaction_frequency)), 1)
+                
+                # Effective question density (Constructive+Interactive per minute) -> student_engagement_opportunities
+                eqd = (count_constructive + count_interactive) / effective_minutes
+                student_engagement_opportunities = round(min(10.0, max(1.0, 3.0 + eqd * 2.5)), 1)
+                
+                if cli_100 >= 50:
+                    cognitive_level = 'high'
+                elif cli_100 >= 25:
+                    cognitive_level = 'medium'
+                else:
+                    cognitive_level = 'low'
             
-            logger.info(f"✅ Question analysis complete: {total_questions} total questions, {high_level_questions_count} high-level questions")
+            logger.info(f"✅ Question analysis complete: {total_questions} total | ICAP P:{count_passive} A:{count_active} C:{count_constructive} I:{count_interactive}")
             
             return {
                 'score': round((interaction_frequency + question_quality + student_engagement_opportunities) / 3, 1),
@@ -2056,31 +2077,30 @@ Be thorough and accurate in your analysis."""
                 'question_quality': round(question_quality, 1),
                 'student_engagement_opportunities': round(student_engagement_opportunities, 1),
                 'cognitive_level': cognitive_level,
-                'high_level_questions': final_high_level_questions[:20],  # All high-level questions
-                'all_questions': final_all_questions[:30],  # All questions for reference
+                'high_level_questions': high_level_questions[:20],
+                'all_questions': final_all_questions,
                 'total_questions': total_questions,
                 'high_level_questions_count': high_level_questions_count,
-                'total_interactions': total_questions  # Questions are the main interactions
+                'total_interactions': total_questions,
+                'icap_counts': {'passive': count_passive, 'active': count_active, 'constructive': count_constructive, 'interactive': count_interactive},
+                'cognitive_level_index': round((2 * count_constructive + 3 * count_interactive) / 3.0 / max(1, total_questions) * 100, 1) if total_questions else 0
             }
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
             error_msg = str(e) if e else "Unknown error"
             logger.error(f"Error in interaction analysis: {error_msg}")
-            # Fallback: use pattern-matched questions if AI fails
+            # Fallback: use pattern-matched questions with default ICAP Active
             fallback_questions = []
-            for q in all_questions[:10]:
+            for q in all_questions:
                 fallback_questions.append({
                     'question': q['question'],
                     'precise_timestamp': self.format_timestamp(q['start_time']),
                     'start_time': q['start_time'],
-                    'type': 'detected',
-                    'cognitive_level': 'medium'
+                    'icap': 'Active',
+                    'is_high_level': False
                 })
-            
-            # Use fallback questions if available, otherwise use low scores
             total_questions = len(fallback_questions)
             if total_questions == 0:
-                # No questions detected at all
                 return {
                     'score': 3.0,
                     'interaction_frequency': 3.0,
@@ -2088,23 +2108,27 @@ Be thorough and accurate in your analysis."""
                     'student_engagement_opportunities': 3.0,
                     'cognitive_level': 'low',
                     'high_level_questions': [],
+                    'all_questions': [],
                     'interaction_moments': [],
                     'total_questions': 0,
-                    'total_interactions': 0
+                    'total_interactions': 0,
+                    'icap_counts': {'passive': 0, 'active': 0, 'constructive': 0, 'interactive': 0},
+                    'cognitive_level_index': 0
                 }
-            else:
-                # Some pattern-matched questions found
-                return {
-                    'score': 6.5,
-                    'interaction_frequency': 6.5,
-                    'question_quality': 6.5,
-                    'student_engagement_opportunities': 6.5,
-                    'cognitive_level': 'medium',
-                    'high_level_questions': fallback_questions,
-                    'interaction_moments': [],
-                    'total_questions': total_questions,
-                    'total_interactions': 0
-                }
+            return {
+                'score': 6.5,
+                'interaction_frequency': 6.5,
+                'question_quality': 6.5,
+                'student_engagement_opportunities': 6.5,
+                'cognitive_level': 'medium',
+                'high_level_questions': [],
+                'all_questions': fallback_questions,
+                'interaction_moments': [],
+                'total_questions': total_questions,
+                'total_interactions': total_questions,
+                'icap_counts': {'passive': 0, 'active': total_questions, 'constructive': 0, 'interactive': 0},
+                'cognitive_level_index': 0
+            }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
         """
@@ -2747,7 +2771,7 @@ Be thorough and accurate in your analysis."""
                 }
             },
 
-            # NEW: Interaction & Engagement Analysis
+            # NEW: Interaction & Engagement Analysis (ICAP: Interactive / Constructive / Active / Passive)
             'interaction_engagement': {
                 'score': round(interaction_score, 1),
                 'interaction_frequency': interaction_analysis.get('interaction_frequency', 7),
@@ -2757,6 +2781,9 @@ Be thorough and accurate in your analysis."""
                 'total_questions': interaction_analysis.get('total_questions', 0),
                 'total_interactions': interaction_analysis.get('total_interactions', 0),
                 'high_level_questions': interaction_analysis.get('high_level_questions', []),
+                'all_questions': interaction_analysis.get('all_questions', []),
+                'icap_counts': interaction_analysis.get('icap_counts', {}),
+                'cognitive_level_index': interaction_analysis.get('cognitive_level_index', 0),
                 'interaction_moments': interaction_analysis.get('interaction_moments', []),
                 'feedback': [
                     f"Asked {interaction_analysis.get('total_questions', 0)} questions at {interaction_analysis.get('cognitive_level', 'medium')} cognitive level",
@@ -3069,6 +3096,49 @@ Be thorough and accurate in your analysis."""
                 audio_path.unlink()
         except Exception as e:
             print(f"Warning: Could not clean up temporary files: {e}")
+
+
+def export_questions_to_excel(questions: List[Dict], output_path: Path) -> Optional[Path]:
+    """
+    Write full question list to an Excel file with columns: #, Question, Timestamp, ICAP.
+    ICAP is one of: Interactive, Constructive, Active, Passive.
+    Returns output_path if successful, None otherwise.
+    """
+    if not OPENPYXL_AVAILABLE:
+        logger.warning("openpyxl not available; skipping question Excel export")
+        return None
+    if not questions:
+        return None
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Questions"
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        headers = ["#", "Question", "Timestamp", "ICAP"]
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 80
+        ws.column_dimensions['C'].width = 12
+        ws.column_dimensions['D'].width = 14
+        for row, q in enumerate(questions, 2):
+            ws.cell(row=row, column=1, value=row - 1)
+            ws.cell(row=row, column=2, value=q.get('question', ''))
+            ws.cell(row=row, column=3, value=q.get('precise_timestamp', ''))
+            icap = q.get('icap', 'Active')
+            ws.cell(row=row, column=4, value=icap)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(output_path)
+        logger.info(f"✅ Exported {len(questions)} questions to {output_path}")
+        return output_path
+    except Exception as e:
+        logger.warning(f"Failed to export questions to Excel: {e}")
+        return None
+
 
 # Global processor instance
 video_processor = VideoAnalysisProcessor()
