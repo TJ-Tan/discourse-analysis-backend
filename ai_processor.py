@@ -27,7 +27,11 @@ except ImportError:
 # Import enhanced configuration
 from metrics_config import (
     ANALYSIS_CONFIG, FILLER_WORDS, SPEECH_METRICS, VISUAL_METRICS, PEDAGOGY_METRICS,
-    calculate_metric_score, get_metric_feedback
+    calculate_metric_score, get_metric_feedback,
+    MARS_CONFIG, MARS_RUBRIC_VERSION,
+    compute_mars_content_category_score, compute_mars_content_category_score_detailed,
+    compute_mars_delivery_category_score,
+    compute_mars_engagement_category_score, compute_mars_overall_score,
 )
 
 # Load environment variables
@@ -159,7 +163,9 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 80, "🎓 Step 4: Generating comprehensive pedagogical insights...")
             await asyncio.sleep(0)  # Force immediate execution
             
-            pedagogical_analysis = await self.analyze_pedagogy_enhanced(speech_analysis, visual_analysis)
+            pedagogical_analysis = await self.analyze_pedagogy_enhanced(
+                speech_analysis, visual_analysis, lecture_context=getattr(self, "lecture_context", "") or ""
+            )
             
             logger.info("✅ Enhanced pedagogical analysis complete")
             await progress_callback(analysis_id, 90, "✅ Enhanced pedagogical analysis complete", {
@@ -177,7 +183,9 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 90, "🤝 Step 4.5: Analyzing interaction and questioning techniques...")
             
             interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
-            
+            sf_metrics = await self.analyze_student_feedback_metrics(speech_analysis)
+            interaction_analysis.update(sf_metrics)
+
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             
@@ -1593,121 +1601,182 @@ Return only the processed transcript with proper punctuation and sentence segmen
         
         return {'error': 'No frames successfully analyzed'}
     
-    async def analyze_pedagogy_enhanced(self, speech_analysis: Dict, visual_analysis: Dict) -> Dict[str, Any]:
+    def _ensure_mars_pedagogy_fields(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure MARS v20260224 nine content criteria exist; map legacy five-dimension scores if needed."""
+        co = float(p.get("content_organization") or 7.0)
+        cc = float(p.get("communication_clarity") or 7.0)
+        ue = float(p.get("use_of_examples") or 7.0)
+        defaults = {
+            "structural_sequencing": co,
+            "logical_consistency": co,
+            "closure_framing": co,
+            "conceptual_accuracy": cc,
+            "causal_reasoning_depth": cc,
+            "multi_perspective_explanation": cc,
+            "example_quality_frequency": ue,
+            "analogy_concept_bridging": ue,
+            "representation_diversity": ue,
+        }
+        for k, v in defaults.items():
+            if k not in p or p[k] is None:
+                p[k] = v
+        return p
+
+    def _augment_causal_reasoning_depth(self, transcript: str, llm_score: float) -> float:
+        """Blend LLM score with causal-marker density (Excel: causal connectors)."""
+        if not transcript or not transcript.strip():
+            return round(min(10.0, max(0.0, llm_score)), 1)
+        t = transcript.lower()
+        markers = (
+            "therefore", "because", "thus", "hence", "as a result", "due to", "consequently",
+            "cause ", " led to", "resulting in", "for this reason", "since ", "so that ",
+        )
+        count = sum(t.count(m) for m in markers)
+        words = max(len(transcript.split()), 1)
+        density = min(1.0, (count / words) * 500.0)
+        heuristic = 3.0 + density * 7.0
+        blended = 0.78 * float(llm_score) + 0.22 * heuristic
+        return round(min(10.0, max(0.0, blended)), 1)
+
+    async def analyze_student_feedback_metrics(self, speech_analysis: Dict) -> Dict[str, Any]:
         """
-        Enhanced comprehensive pedagogical analysis with weighted sub-components
+        MARS Engagement → Feedback: learner question frequency & cognitive level (0–10 each).
+        Webcasts often lack audience audio — LLM estimates confidence; low/none → 0 + remarks.
         """
-        # Prepare enhanced context for GPT-4o
+        transcript = speech_analysis.get("transcript") or ""
+        if len(transcript.strip()) < 80:
+            return {
+                "student_question_frequency_score": 0.0,
+                "student_question_cognitive_score": 0.0,
+                "student_feedback_confidence": "none",
+                "student_feedback_remarks": "Transcript too short to assess audience questions.",
+            }
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-5-nano",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You assess whether the transcript contains student/audience questions (not the instructor's questions).
+In typical webcasts only the instructor is mic'd: if all questions appear to be instructor questions, set scores to 0 and confidence none.
+Return JSON only:
+- student_question_frequency_score: number 0-10 (density of clear audience/student questions)
+- student_question_cognitive_score: number 0-10 (Bloom-style depth of those questions)
+- confidence: one of none|low|medium|high
+- remarks: short note (e.g. no separate audience audio)""",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Transcript:\n{transcript[:12000]}",
+                    },
+                ],
+                max_completion_tokens=400,
+            )
+            txt = response.choices[0].message.content
+            if not txt:
+                raise ValueError("empty")
+            data = json.loads(txt)
+            conf = (data.get("confidence") or "none").lower()
+            if conf == "none":
+                data["student_question_frequency_score"] = 0.0
+                data["student_question_cognitive_score"] = 0.0
+            sf = float(data.get("student_question_frequency_score", 0) or 0)
+            sc = float(data.get("student_question_cognitive_score", 0) or 0)
+            return {
+                "student_question_frequency_score": round(min(10.0, max(0.0, sf)), 1),
+                "student_question_cognitive_score": round(min(10.0, max(0.0, sc)), 1),
+                "student_feedback_confidence": conf,
+                "student_feedback_remarks": data.get("remarks", ""),
+            }
+        except Exception as e:
+            logger.warning(f"Student feedback metrics fallback: {e}")
+            return {
+                "student_question_frequency_score": 0.0,
+                "student_question_cognitive_score": 0.0,
+                "student_feedback_confidence": "none",
+                "student_feedback_remarks": "Could not estimate audience questions; defaulting to 0 (typical for single-speaker webcast).",
+            }
+
+    async def analyze_pedagogy_enhanced(
+        self, speech_analysis: Dict, visual_analysis: Dict, lecture_context: str = ""
+    ) -> Dict[str, Any]:
+        """
+        MARS Content category: nine criteria (Revised Rubric) + legacy five-dimension scores for reports.
+        """
+        lc = (lecture_context or "").strip()
+        lc_block = f"\nInstructor-provided lecture context:\n{lc}\n" if lc else ""
+
         context = f"""
         COMPREHENSIVE LECTURE ANALYSIS DATA:
-        
-        Speech Analysis (Full Transcript):
-        - Complete Transcript: {speech_analysis.get('transcript', '')[:4000]}...
-        - Speaking Rate: {speech_analysis.get('speaking_rate', 0):.1f} words/minute
+        {lc_block}
+        Speech Analysis (Full Transcript excerpt):
+        - Transcript: {speech_analysis.get('transcript', '')[:6000]}...
+        - Speaking Rate: {speech_analysis.get('speaking_rate', 0):.1f} WPM
         - Filler Word Ratio: {speech_analysis.get('filler_ratio', 0):.3f}
-        - Voice Variety Score: {speech_analysis.get('voice_variety_score', 0.5):.2f}
-        - Pause Effectiveness: {speech_analysis.get('pause_effectiveness_score', 0.5):.2f}
         - Key Highlights: {'; '.join(speech_analysis.get('highlights', [])[:8])}
         
-        Visual Analysis ({visual_analysis.get('frames_analyzed', 0)} frames):
-        - Eye Contact Score: {visual_analysis.get('scores', {}).get('eye_contact', 'N/A')}
-        - Gesture Effectiveness: {visual_analysis.get('scores', {}).get('gestures', 'N/A')}
-        - Posture Score: {visual_analysis.get('scores', {}).get('posture', 'N/A')}
-        - Facial Engagement: {visual_analysis.get('scores', {}).get('engagement', 'N/A')}
-        - Professional Appearance: {visual_analysis.get('scores', {}).get('professionalism', 'N/A')}
-        
-        Content Structure Analysis:
-        - Organization: {speech_analysis.get('content_structure', {}).get('content_organization', 'N/A')}
-        - Clarity: {speech_analysis.get('content_structure', {}).get('communication_clarity', 'N/A')}
-        - Examples Usage: {speech_analysis.get('content_structure', {}).get('use_of_examples', 'N/A')}
+        Visual summary ({visual_analysis.get('frames_analyzed', 0)} frames):
+        - Scores — eye_contact: {visual_analysis.get('scores', {}).get('eye_contact', 'N/A')}, gestures: {visual_analysis.get('scores', {}).get('gestures', 'N/A')}, posture: {visual_analysis.get('scores', {}).get('posture', 'N/A')}, engagement: {visual_analysis.get('scores', {}).get('engagement', 'N/A')}, professionalism: {visual_analysis.get('scores', {}).get('professionalism', 'N/A')}
         """
-        
+
         response = openai_client.chat.completions.create(
             model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert pedagogical analyst with deep expertise in educational effectiveness. 
-                    Analyze comprehensive lecture data and provide detailed feedback on teaching effectiveness across ALL dimensions.
-                    
-                    Focus on these key pedagogical areas:
-                    1. Content Organization & Structure - Logical flow, transitions, scaffolding
-                    2. Student Engagement Techniques - Questions, interactions, variety, attention management
-                    3. Communication Clarity - Explanations, language use, concept delivery
-                    4. Use of Examples & Illustrations - Quality, relevance, variety of examples
-                    5. Knowledge Checking & Assessment - Verification of understanding, feedback loops
-                    
-                    Provide specific, actionable feedback with evidence from the data."""
+                    "content": """You are an expert pedagogical analyst. Score the lecture transcript (1-10 each) for MARS Content rubric:
+
+A) Content Organisation: structural_sequencing, logical_consistency, closure_framing
+B) Explanation Quality: conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
+C) Use of Examples / Representation: example_quality_frequency, analogy_concept_bridging, representation_diversity
+
+Also provide legacy aggregate scores (1-10): content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness.
+
+Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).""",
                 },
                 {
                     "role": "user",
                     "content": f"""{context}
-                    
-                    Based on this comprehensive analysis, provide detailed pedagogical assessment:
-                    
-                    REQUIRED SCORES (1-10 for each):
-                    1. Content Organization & Structure
-                    2. Student Engagement Techniques  
-                    3. Communication Clarity & Delivery
-                    4. Use of Examples & Illustrations
-                    5. Knowledge Checking & Assessment
-                    
-                    REQUIRED QUALITATIVE ANALYSIS:
-                    6. Top 5 teaching strengths demonstrated
-                    7. Top 5 areas needing improvement
-                    8. Specific actionable recommendations (at least 8)
-                    9. Overall teaching effectiveness assessment
-                    
-                    Format as JSON with keys: 
-                    content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, 
-                    strengths, improvements, recommendations, overall_effectiveness, detailed_analysis"""
-                }
+
+Return a single JSON object with ALL keys:
+structural_sequencing, logical_consistency, closure_framing,
+conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation,
+example_quality_frequency, analogy_concept_bridging, representation_diversity,
+content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
+strengths, improvements, recommendations, detailed_analysis""",
+                },
             ],
-            max_completion_tokens=1400  # Increased for comprehensive analysis
+            max_completion_tokens=1800,
         )
-        
+
         try:
-            # Check if response content exists
             response_content = response.choices[0].message.content
             if not response_content:
                 raise ValueError("AI response content is None or empty")
-            
-            return json.loads(response_content)
+            p = json.loads(response_content)
+            p = self._ensure_mars_pedagogy_fields(p)
+            p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
+                speech_analysis.get("transcript") or "",
+                float(p.get("causal_reasoning_depth") or 7.0),
+            )
+            return p
         except (json.JSONDecodeError, ValueError, AttributeError):
-            # Enhanced fallback analysis
-            return {
-                'content_organization': 7.5,
-                'engagement_techniques': 7.0,
-                'communication_clarity': 7.8,
-                'use_of_examples': 7.2,
-                'knowledge_checking': 6.8,
-                'overall_effectiveness': 7.3,
-                'strengths': [
-                    'Clear and articulate speaking voice',
-                    'Well-structured content presentation',
-                    'Professional demeanor and appearance',
-                    'Good use of voice modulation',
-                    'Consistent delivery throughout session'
+            fb = {
+                "content_organization": 7.5,
+                "engagement_techniques": 7.0,
+                "communication_clarity": 7.8,
+                "use_of_examples": 7.2,
+                "knowledge_checking": 6.8,
+                "overall_effectiveness": 7.3,
+                "strengths": [
+                    "Clear delivery",
+                    "Structured presentation",
                 ],
-                'improvements': [
-                    'Increase student interaction and engagement',
-                    'Add more concrete examples and illustrations',
-                    'Implement regular comprehension checks',
-                    'Improve gesture variety and purposefulness',
-                    'Enhance conclusion and summary techniques'
-                ],
-                'recommendations': [
-                    'Practice incorporating more interactive elements',
-                    'Develop a broader range of relevant examples',
-                    'Work on strategic pausing for emphasis',
-                    'Implement regular "check for understanding" moments',
-                    'Consider movement and spatial positioning',
-                    'Enhance opening and closing techniques',
-                    'Practice varied questioning strategies',
-                    'Develop more engaging visual presence'
-                ],
-                'detailed_analysis': 'Comprehensive analysis completed with enhanced metrics and full transcript review.'
+                "improvements": ["Add more interaction", "More examples"],
+                "recommendations": ["Check understanding more often"],
+                "detailed_analysis": "Fallback pedagogical assessment.",
             }
+            return self._ensure_mars_pedagogy_fields(fb)
         
 
     def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> float:
@@ -2756,18 +2825,70 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         # Get category weights from config
         category_weights = ANALYSIS_CONFIG["weights"]
         
-        # Calculate overall weighted score with new interaction category
-        overall_score = (
-            speech_score * category_weights["speech_analysis"] + 
-            visual_score * category_weights["body_language"] + 
+        # --- MARS v20260224 overall (Content 20% + Delivery 40% + Engagement 40%) ---
+        _content_detail = compute_mars_content_category_score_detailed(pedagogical_analysis)
+        mars_content_score = _content_detail["content_category_score"]
+        mars_delivery_score = compute_mars_delivery_category_score(speech_score, visual_score)
+        mars_engagement_score = compute_mars_engagement_category_score(interaction_analysis)
+        mars_overall_score = compute_mars_overall_score(
+            mars_content_score, mars_delivery_score, mars_engagement_score
+        )
+
+        # Legacy equal-weight five-way score (reference only)
+        legacy_score = (
+            speech_score * category_weights["speech_analysis"] +
+            visual_score * category_weights["body_language"] +
             pedagogy_score * category_weights["teaching_effectiveness"] +
             interaction_score * category_weights["interaction_engagement"] +
             presentation_score * category_weights["presentation_skills"]
         )
+        overall_score = round(mars_overall_score, 1)
         
         # Build the result dictionary
         result = {
             'overall_score': round(overall_score, 1),
+            'scoring_model': f'MARS_{MARS_RUBRIC_VERSION}',
+            'legacy_equal_weight_overall': round(legacy_score, 1),
+            'mars_rubric': {
+                'version': MARS_RUBRIC_VERSION,
+                'main_category_weights': MARS_CONFIG['main_categories'],
+                'content_score': round(mars_content_score, 2),
+                'content_subscores': {
+                    'content_organisation': round(_content_detail['content_organisation_score'], 2),
+                    'explanation_quality': round(_content_detail['explanation_quality_score'], 2),
+                    'use_of_examples_representation': round(_content_detail['use_of_examples_representation_score'], 2),
+                    'content_formula': _content_detail['formula'],
+                    'criteria_weights': MARS_CONFIG.get('content_criteria_weights', {}),
+                },
+                'delivery_score': round(mars_delivery_score, 2),
+                'engagement_score': round(mars_engagement_score, 2),
+                'formula': '0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                'content_criteria': {
+                    'structural_sequencing': round(float(pedagogical_analysis.get('structural_sequencing', 7) or 7), 1),
+                    'logical_consistency': round(float(pedagogical_analysis.get('logical_consistency', 7) or 7), 1),
+                    'closure_framing': round(float(pedagogical_analysis.get('closure_framing', 7) or 7), 1),
+                    'conceptual_accuracy': round(float(pedagogical_analysis.get('conceptual_accuracy', 7) or 7), 1),
+                    'causal_reasoning_depth': round(float(pedagogical_analysis.get('causal_reasoning_depth', 7) or 7), 1),
+                    'multi_perspective_explanation': round(float(pedagogical_analysis.get('multi_perspective_explanation', 7) or 7), 1),
+                    'example_quality_frequency': round(float(pedagogical_analysis.get('example_quality_frequency', 7) or 7), 1),
+                    'analogy_concept_bridging': round(float(pedagogical_analysis.get('analogy_concept_bridging', 7) or 7), 1),
+                    'representation_diversity': round(float(pedagogical_analysis.get('representation_diversity', 7) or 7), 1),
+                },
+                'delivery_components': {
+                    'speech_analysis_score': round(speech_score, 2),
+                    'body_language_score': round(visual_score, 2),
+                    'note': 'Delivery = 50% speech category + 50% body language category (each uses five 0–10 sub-metrics per Revised Rubric).',
+                },
+                'engagement_components': {
+                    'question_density': round(float(interaction_analysis.get('interaction_frequency', 0) or 0), 1),
+                    'cognitive_level_index_cli': round(float(interaction_analysis.get('question_quality', 0) or 0), 1),
+                    'student_uptake_index': round(float(interaction_analysis.get('student_uptake_index', 0) or 0), 1),
+                    'question_distribution_stability': round(float(interaction_analysis.get('question_distribution_stability', 0) or 0), 1),
+                    'student_question_frequency': round(float(interaction_analysis.get('student_question_frequency_score', 0) or 0), 1),
+                    'student_question_cognitive_level': round(float(interaction_analysis.get('student_question_cognitive_score', 0) or 0), 1),
+                    'student_feedback_remarks': interaction_analysis.get('student_feedback_remarks', ''),
+                },
+            },
             
             # Detailed Speech Analysis
             'speech_analysis': {
@@ -2835,11 +2956,23 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             # Detailed Teaching Effectiveness
             'teaching_effectiveness': {
                 'score': round(pedagogy_score, 1),
+                'mars_content_category_score': round(mars_content_score, 2),
                 'content_organization': round(pedagogical_analysis.get('content_organization', 7), 1),
                 'engagement_techniques': round(pedagogical_analysis.get('engagement_techniques', 7), 1),
                 'communication_clarity': round(pedagogical_analysis.get('communication_clarity', 7), 1),
                 'use_of_examples': round(pedagogical_analysis.get('use_of_examples', 7), 1),
                 'knowledge_checking': round(pedagogical_analysis.get('knowledge_checking', 7), 1),
+                'mars_content_criteria': {
+                    'structural_sequencing': round(float(pedagogical_analysis.get('structural_sequencing', 7) or 7), 1),
+                    'logical_consistency': round(float(pedagogical_analysis.get('logical_consistency', 7) or 7), 1),
+                    'closure_framing': round(float(pedagogical_analysis.get('closure_framing', 7) or 7), 1),
+                    'conceptual_accuracy': round(float(pedagogical_analysis.get('conceptual_accuracy', 7) or 7), 1),
+                    'causal_reasoning_depth': round(float(pedagogical_analysis.get('causal_reasoning_depth', 7) or 7), 1),
+                    'multi_perspective_explanation': round(float(pedagogical_analysis.get('multi_perspective_explanation', 7) or 7), 1),
+                    'example_quality_frequency': round(float(pedagogical_analysis.get('example_quality_frequency', 7) or 7), 1),
+                    'analogy_concept_bridging': round(float(pedagogical_analysis.get('analogy_concept_bridging', 7) or 7), 1),
+                    'representation_diversity': round(float(pedagogical_analysis.get('representation_diversity', 7) or 7), 1),
+                },
                 'feedback': pedagogical_analysis.get('recommendations', []),
                 # Explanations based on rubric
                 'explanations': {
@@ -2881,6 +3014,11 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'student_uptake_index_pct': interaction_analysis.get('student_uptake_index_pct', 0),
                 'question_distribution_stability_pct': interaction_analysis.get('question_distribution_stability_pct', 0),
                 'overall_interaction_pct': interaction_analysis.get('overall_interaction_pct', 0),
+                'student_question_frequency_score': interaction_analysis.get('student_question_frequency_score', 0),
+                'student_question_cognitive_score': interaction_analysis.get('student_question_cognitive_score', 0),
+                'student_feedback_confidence': interaction_analysis.get('student_feedback_confidence', 'none'),
+                'student_feedback_remarks': interaction_analysis.get('student_feedback_remarks', ''),
+                'mars_engagement_category_score': round(mars_engagement_score, 2),
                 'cognitive_level': interaction_analysis.get('cognitive_level', 'medium'),
                 'total_questions': interaction_analysis.get('total_questions', 0),
                 'total_interactions': interaction_analysis.get('total_interactions', 0),
@@ -2925,12 +3063,26 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             
             # DETAILED CALCULATION BREAKDOWN
             'calculation_breakdown': {
-                'category_weights': {
-                    'speech_analysis': f"{category_weights['speech_analysis']*100}%",
-                    'body_language': f"{category_weights['body_language']*100}%",
-                    'teaching_effectiveness': f"{category_weights['teaching_effectiveness']*100}%",
-                    'interaction_engagement': f"{category_weights['interaction_engagement']*100}%",
-                    'presentation_skills': f"{category_weights['presentation_skills']*100}%"
+                'mars_primary': {
+                    'version': MARS_RUBRIC_VERSION,
+                    'overall_score': round(overall_score, 1),
+                    'content': round(mars_content_score, 2),
+                    'delivery': round(mars_delivery_score, 2),
+                    'engagement': round(mars_engagement_score, 2),
+                    'formula': '0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                    'expanded': (
+                        f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
+                    ),
+                },
+                'legacy_reference_equal_weights': {
+                    'category_weights': {
+                        'speech_analysis': f"{category_weights['speech_analysis']*100}%",
+                        'body_language': f"{category_weights['body_language']*100}%",
+                        'teaching_effectiveness': f"{category_weights['teaching_effectiveness']*100}%",
+                        'interaction_engagement': f"{category_weights['interaction_engagement']*100}%",
+                        'presentation_skills': f"{category_weights['presentation_skills']*100}%"
+                    },
+                    'legacy_overall': round(legacy_score, 2),
                 },
                 'component_scores': {
                     'speech_analysis': {
@@ -2960,9 +3112,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     }
                 },
                 'final_calculation': {
-                    'formula': f'(Speech × {category_weights["speech_analysis"]:.2f}) + (Body × {category_weights["body_language"]:.2f}) + (Teaching × {category_weights["teaching_effectiveness"]:.2f}) + (Interaction × {category_weights["interaction_engagement"]:.2f}) + (Presentation × {category_weights["presentation_skills"]:.2f})',
-                    'calculation': f"({round(speech_score, 1)} × {category_weights['speech_analysis']:.2f}) + ({round(visual_score, 1)} × {category_weights['body_language']:.2f}) + ({round(pedagogy_score, 1)} × {category_weights['teaching_effectiveness']:.2f}) + ({round(interaction_score, 1)} × {category_weights['interaction_engagement']:.2f}) + ({round(presentation_score, 1)} × {category_weights['presentation_skills']:.2f})",
-                    'result': round(overall_score, 1)
+                    'formula': 'MARS: 0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                    'calculation': (
+                        f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
+                    ),
+                    'result': round(overall_score, 1),
+                    'legacy_equal_weight_formula': f'(Speech × {category_weights["speech_analysis"]:.2f}) + ... (see legacy_reference_equal_weights)',
+                    'legacy_result': round(legacy_score, 1)
                 },
                 'speech_breakdown': {
                     'components': category_weights['speech_components'],

@@ -21,6 +21,166 @@ class MetricConfig:
     unit: str = ""
     evidence_required: bool = True
 
+# --- MARS Rubric (Excel "Revised Rubric", v20260224) ---
+# Main categories: Content 20%, Delivery 40%, Engagement 40%
+MARS_RUBRIC_VERSION = "v20260224"
+
+MARS_CONFIG = {
+    "version": MARS_RUBRIC_VERSION,
+    "main_categories": {
+        "content": 0.20,
+        "delivery": 0.40,
+        "engagement": 0.40,
+    },
+    # Within Content (scores 0–10 each; combined with sub-weights below)
+    "content_subweights": {
+        "content_organisation": 0.30,
+        "explanation_quality": 0.40,
+        "use_of_examples_representation": 0.30,
+    },
+    # Criteria weights *within* each Content sub-category (sum to sub-category total)
+    "content_criteria_weights": {
+        "content_organisation": {
+            "total": 0.30,
+            "structural_sequencing": 0.10,
+            "logical_consistency": 0.10,
+            "closure_framing": 0.10,
+        },
+        "explanation_quality": {
+            "total": 0.40,
+            "conceptual_accuracy": 0.20,
+            "causal_reasoning_depth": 0.10,
+            "multi_perspective_explanation": 0.10,
+        },
+        "use_of_examples_representation": {
+            "total": 0.30,
+            "example_quality_frequency": 0.10,
+            "analogy_concept_bridging": 0.10,
+            "representation_diversity": 0.10,
+        },
+    },
+    # Within Engagement main category
+    "engagement_subweights": {
+        "interaction_frequency": 0.40,  # Question density
+        "question_quality_block": 0.40,  # CLI + SUI + QDS
+        "feedback": 0.20,
+    },
+    # Inside question_quality_block (sums to 1.0)
+    "question_quality_internal": {
+        "cognitive_level_index": 0.50,  # CLI — maps from ICAP-derived question_quality
+        "student_uptake_index": 0.25,
+        "question_distribution_stability": 0.25,
+    },
+    # Inside feedback (two criteria equal)
+    "feedback_internal": {
+        "student_question_frequency": 0.50,
+        "student_question_cognitive_level": 0.50,
+    },
+}
+
+
+def compute_mars_delivery_category_score(speech_score: float, visual_score: float) -> float:
+    """Delivery = 50% Speech Analysis + 50% Body Language (each 0–10)."""
+    return 0.5 * float(speech_score) + 0.5 * float(visual_score)
+
+
+def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Content category 0–10 from nine criteria. Sub-categories sum to 100% of Content:
+    - Content Organisation 0.30 = SS 0.10 + LC 0.10 + CF 0.10
+    - Explanation Quality 0.40 = Conceptual Accuracy 0.20 + Causal 0.10 + Multi-perspective 0.10
+    - Use of Examples / Representation 0.30 = three criteria × 0.10 each
+
+    Sub-score (0–10) = weighted sum of criteria / sub-category total weight.
+    Final Content = 0.30×Org_sub + 0.40×Expl_sub + 0.30×Examples_sub
+    (then Content is 20% of overall MARS via main_categories).
+    """
+    def g(key: str, default: float = 7.0) -> float:
+        v = pedagogical_analysis.get(key, default)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    cw = MARS_CONFIG["content_criteria_weights"]
+    co = cw["content_organisation"]
+    org = (
+        co["structural_sequencing"] * g("structural_sequencing")
+        + co["logical_consistency"] * g("logical_consistency")
+        + co["closure_framing"] * g("closure_framing")
+    ) / co["total"]
+
+    eq = cw["explanation_quality"]
+    expl = (
+        eq["conceptual_accuracy"] * g("conceptual_accuracy")
+        + eq["causal_reasoning_depth"] * g("causal_reasoning_depth")
+        + eq["multi_perspective_explanation"] * g("multi_perspective_explanation")
+    ) / eq["total"]
+
+    ue = cw["use_of_examples_representation"]
+    exmp = (
+        ue["example_quality_frequency"] * g("example_quality_frequency")
+        + ue["analogy_concept_bridging"] * g("analogy_concept_bridging")
+        + ue["representation_diversity"] * g("representation_diversity")
+    ) / ue["total"]
+
+    w = MARS_CONFIG["content_subweights"]
+    content = (
+        w["content_organisation"] * org
+        + w["explanation_quality"] * expl
+        + w["use_of_examples_representation"] * exmp
+    )
+    return {
+        "content_category_score": content,
+        "content_organisation_score": org,
+        "explanation_quality_score": expl,
+        "use_of_examples_representation_score": exmp,
+        "formula": (
+            "Content = 0.30×Org + 0.40×Expl + 0.30×Ex; "
+            "Org = (0.1×SS + 0.1×LC + 0.1×CF) / 0.3; "
+            "Expl = (0.2×CA + 0.1×CR + 0.1×MP) / 0.4; "
+            "Ex = (0.1×Eq + 0.1×An + 0.1×Rd) / 0.3"
+        ),
+    }
+
+
+def compute_mars_content_category_score(pedagogical_analysis: Dict[str, Any]) -> float:
+    """Content category 0–10 (single number)."""
+    return float(compute_mars_content_category_score_detailed(pedagogical_analysis)["content_category_score"])
+
+
+def compute_mars_engagement_category_score(interaction_analysis: Dict[str, Any]) -> float:
+    """
+    Engagement 40% of MARS: 40% QD + 40% (CLI/SUI/QDS block) + 20% student feedback.
+    """
+    qd = float(interaction_analysis.get("interaction_frequency") or 0)
+    cli = float(interaction_analysis.get("question_quality") or 0)
+    sui = float(interaction_analysis.get("student_uptake_index") or 0)
+    qds = float(interaction_analysis.get("question_distribution_stability") or 0)
+    qw = MARS_CONFIG["question_quality_internal"]
+    qq_block = (
+        qw["cognitive_level_index"] * cli
+        + qw["student_uptake_index"] * sui
+        + qw["question_distribution_stability"] * qds
+    )
+    sf = float(interaction_analysis.get("student_question_frequency_score") or 0)
+    sc = float(interaction_analysis.get("student_question_cognitive_score") or 0)
+    fb = (sf + sc) / 2.0
+    ew = MARS_CONFIG["engagement_subweights"]
+    return ew["interaction_frequency"] * qd + ew["question_quality_block"] * qq_block + ew["feedback"] * fb
+
+
+def compute_mars_overall_score(
+    content_score: float, delivery_score: float, engagement_score: float
+) -> float:
+    m = MARS_CONFIG["main_categories"]
+    return (
+        m["content"] * float(content_score)
+        + m["delivery"] * float(delivery_score)
+        + m["engagement"] * float(engagement_score)
+    )
+
+
 # Global Analysis Configuration
 ANALYSIS_CONFIG = {
     "sampling": {
