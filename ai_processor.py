@@ -68,14 +68,16 @@ class VideoAnalysisProcessor:
             )
             await asyncio.sleep(0.3)  # Reduced sleep for more responsive updates
         
-    async def process_video(self, video_path: Path, analysis_id: str, progress_callback):
+    async def process_video(self, video_path: Path, analysis_id: str, progress_callback, lecture_context: Optional[str] = None):
         """
-        Enhanced processing pipeline for video analysis with improved sampling and metrics
+        Enhanced processing pipeline for video analysis with improved sampling and metrics.
+        lecture_context: optional user text (subject, topic, ILOs) passed to LLM calls for context-aware scoring.
         """
         try:
             # Store for use in helper methods
             self.analysis_id = analysis_id
             self.progress_callback = progress_callback
+            self.lecture_context = (lecture_context or "").strip()[:20000] if lecture_context else ""
 
             logger.info(f"🎬 Starting enhanced video analysis for {analysis_id}")
             await progress_callback(analysis_id, 5, f"🎬 Starting enhanced video analysis for {analysis_id}")
@@ -246,6 +248,7 @@ class VideoAnalysisProcessor:
             await progress_callback(analysis_id, 95, "📊 Step 6: Calculating weighted component scores...")
             
             final_results = await self.combine_analysis_enhanced(speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, sample_frames)
+            final_results["lecture_context"] = (getattr(self, "lecture_context", None) or "").strip()
             
             logger.info(f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
             await progress_callback(analysis_id, 100, f"✅ Enhanced analysis complete! Overall score: {final_results['overall_score']}/10")
@@ -1707,6 +1710,33 @@ Return only the processed transcript with proper punctuation and sentence segmen
             }
         
 
+    def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> float:
+        """
+        Question Distribution Stability (QDS): how spread out questions are over the lecture.
+        Uses 10 time bins; score 0-10 from normalized entropy (uniform distribution = 10).
+        E.g. questions at 3min, 18min, 38min in a 50min lecture = good spread.
+        """
+        import math
+        if not questions or len(questions) < 2 or duration_seconds <= 0:
+            return 0.0
+        num_bins = 10
+        bin_counts = [0] * num_bins
+        for q in questions:
+            t = q.get('start_time') or 0
+            bin_idx = min(int(t / duration_seconds * num_bins), num_bins - 1)
+            bin_counts[bin_idx] += 1
+        total = sum(bin_counts)
+        if total == 0:
+            return 0.0
+        entropy = 0.0
+        for c in bin_counts:
+            if c > 0:
+                p = c / total
+                entropy -= p * math.log2(p)
+        max_entropy = math.log2(num_bins)
+        normalized = entropy / max_entropy if max_entropy > 0 else 0.0  # 0 to 1
+        return round(min(10.0, max(0.0, normalized * 10.0)), 1)
+    
     def detect_questions_pattern_matching(self, words_data: List[Dict], transcript_text: str = "") -> List[Dict]:
         """
         Detect ALL questions from polished transcript.
@@ -1905,6 +1935,15 @@ Return only the processed transcript with proper punctuation and sentence segmen
         else:
             all_questions_text = "\n\nNo questions detected (ending with ?)."
         
+        context_block = ""
+        lc = getattr(self, "lecture_context", None) or ""
+        if lc.strip():
+            context_block = (
+                "\n\n---\nLecture context (provided by the instructor; use when interpreting "
+                "questions and teaching intent; reserved for future rubric-based scoring):\n"
+                f"{lc.strip()}\n---\n"
+            )
+        
         # Step 3: AI analysis with ICAP classification (Interactive / Constructive / Active / Passive)
         # ICAP framework (Chi & Wylie): Passive < Active < Constructive < Interactive in cognitive engagement
         response = openai_client.chat.completions.create(
@@ -1937,7 +1976,7 @@ Return JSON with:
                 {
                     "role": "user",
                     "content": f"""Classify each of the following questions from a lecture transcript using ICAP (Passive / Active / Constructive / Interactive). All items below end with a question mark (?).
-
+{context_block}
 {all_questions_text}
 
 For each question, set "icap" to exactly one of: Passive, Active, Constructive, Interactive.
@@ -2022,45 +2061,52 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             
             high_level_questions_count = count_constructive + count_interactive
             
-            # Step 7: Quantify metrics to match current rubric (1-10) using ICAP / document logic
-            # CLI = Cognitive Level Index: (2*%Constructive + 3*%Interactive)/3, scale 0-100 (doc)
-            # Map CLI 0-100 -> question_quality 1-10. Target ranges: Passive <10%, Active 30-50%, Constructive 25-40%, Interactive 10-20%
+            # Step 7: Quantify metrics (0-10 scale) and percentages (0-100) for 20% sub-category
+            # Components: Interaction frequency (QD), Question quality (CLI), Student Uptake Index (SUI), Question Distribution Stability (QDS)
             duration_minutes = max(0.1, speech_analysis.get('duration_minutes', 1))
             effective_minutes = duration_minutes
+            duration_seconds = duration_minutes * 60.0
             
             if total_questions == 0:
-                interaction_frequency = 3.0
-                question_quality = 3.0
-                student_engagement_opportunities = 3.0
+                interaction_frequency = 0.0
+                question_quality = 0.0
+                student_uptake_index = 0.0
+                question_distribution_stability = 0.0
                 cognitive_level = 'low'
+                interaction_frequency_pct = 0.0
+                question_quality_pct = 0.0
+                student_uptake_index_pct = 0.0
+                question_distribution_stability_pct = 0.0
+                overall_pct = 0.0
             else:
-                pct_passive = count_passive / total_questions
-                pct_active = count_active / total_questions
                 pct_constructive = count_constructive / total_questions
                 pct_interactive = count_interactive / total_questions
-                # CLI = (2 * %Constructive + 3 * %Interactive) / 3  (weighted; max when all Interactive = 1.0)
-                cli_raw = (2 * pct_constructive + 3 * pct_interactive) / 3.0  # 0 to 1
+                # CLI = Cognitive Level Index 0-100 -> question_quality 0-10
+                cli_raw = (2 * pct_constructive + 3 * pct_interactive) / 3.0
                 cli_100 = cli_raw * 100
-                # question_quality 1-10 from CLI: 0 -> 3, 100 -> 9.5
-                question_quality = 3.0 + (cli_100 / 100.0) * 6.5
-                question_quality = round(min(10.0, max(1.0, question_quality)), 1)
+                question_quality = (cli_100 / 100.0) * 10.0  # 0-10
+                question_quality = round(min(10.0, max(0.0, question_quality)), 1)
                 
-                # Question density (questions per minute) -> interaction_frequency 1-10
+                # 1) Question density (QD): high 8-10, mid 4-7, low 1-3, no density (0-0.1) = 0
                 qd = total_questions / effective_minutes
-                # 0.5-2 Q/min = good; <0.2 = low; >3 = very high
-                if qd >= 2.0:
-                    interaction_frequency = min(10.0, 7.0 + (qd - 2) * 0.5)
-                elif qd >= 0.5:
-                    interaction_frequency = 4.0 + (qd - 0.2) / 0.3  # ~4 to 8
-                elif qd >= 0.2:
-                    interaction_frequency = 3.5 + (qd - 0.2) / 0.3 * 2.5
+                if qd <= 0.1:
+                    interaction_frequency = 0.0
+                elif qd < 0.5:
+                    interaction_frequency = 1.0 + (qd - 0.1) / 0.4 * 2.0  # 1 to 3
+                elif qd < 1.5:
+                    interaction_frequency = 4.0 + (qd - 0.5) / 1.0 * 3.0  # 4 to 7
                 else:
-                    interaction_frequency = max(1.0, 3.0 + qd * 5)
-                interaction_frequency = round(min(10.0, max(1.0, interaction_frequency)), 1)
+                    interaction_frequency = 8.0 + min(2.0, (qd - 1.5) * 2.0)  # 8 to 10 (e.g. 1.5->8, 2.5->10)
+                interaction_frequency = round(min(10.0, max(0.0, interaction_frequency)), 1)
                 
-                # Effective question density (Constructive+Interactive per minute) -> student_engagement_opportunities
+                # 2) Student Uptake Index (SUI): Constructive+Interactive per minute -> 0-10
                 eqd = (count_constructive + count_interactive) / effective_minutes
-                student_engagement_opportunities = round(min(10.0, max(1.0, 3.0 + eqd * 2.5)), 1)
+                student_uptake_index = round(min(10.0, max(0.0, 3.0 + eqd * 2.5)), 1)
+                
+                # 3) Question Distribution Stability (QDS): spread of questions over lecture -> 0-10
+                question_distribution_stability = self._compute_question_distribution_stability(
+                    final_all_questions, duration_seconds
+                )
                 
                 if cli_100 >= 50:
                     cognitive_level = 'high'
@@ -2069,13 +2115,28 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 else:
                     cognitive_level = 'low'
             
-            logger.info(f"✅ Question analysis complete: {total_questions} total | ICAP P:{count_passive} A:{count_active} C:{count_constructive} I:{count_interactive}")
+            # Percentages (0-100) for each component (only recalc when we have questions)
+            if total_questions > 0:
+                interaction_frequency_pct = round(interaction_frequency * 10.0, 1)
+                question_quality_pct = round(question_quality * 10.0, 1)
+                student_uptake_index_pct = round(student_uptake_index * 10.0, 1)
+                question_distribution_stability_pct = round(question_distribution_stability * 10.0, 1)
+                overall_pct = (interaction_frequency + question_quality + student_uptake_index + question_distribution_stability) / 4.0 * 10.0
+            
+            logger.info(f"✅ Question analysis complete: {total_questions} total | QD→{interaction_frequency} SUI→{student_uptake_index} QDS→{question_distribution_stability}")
             
             return {
-                'score': round((interaction_frequency + question_quality + student_engagement_opportunities) / 3, 1),
+                'score': round((interaction_frequency + question_quality + student_uptake_index + question_distribution_stability) / 4.0, 1),
                 'interaction_frequency': round(interaction_frequency, 1),
                 'question_quality': round(question_quality, 1),
-                'student_engagement_opportunities': round(student_engagement_opportunities, 1),
+                'student_uptake_index': round(student_uptake_index, 1),
+                'student_engagement_opportunities': round(student_uptake_index, 1),  # backward compat
+                'question_distribution_stability': round(question_distribution_stability, 1),
+                'interaction_frequency_pct': interaction_frequency_pct,
+                'question_quality_pct': question_quality_pct,
+                'student_uptake_index_pct': student_uptake_index_pct,
+                'question_distribution_stability_pct': question_distribution_stability_pct,
+                'overall_interaction_pct': round(overall_pct, 1),
                 'cognitive_level': cognitive_level,
                 'high_level_questions': high_level_questions[:20],
                 'all_questions': final_all_questions,
@@ -2102,10 +2163,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             total_questions = len(fallback_questions)
             if total_questions == 0:
                 return {
-                    'score': 3.0,
-                    'interaction_frequency': 3.0,
-                    'question_quality': 3.0,
-                    'student_engagement_opportunities': 3.0,
+                    'score': 0.0,
+                    'interaction_frequency': 0.0,
+                    'question_quality': 0.0,
+                    'student_uptake_index': 0.0,
+                    'student_engagement_opportunities': 0.0,
+                    'question_distribution_stability': 0.0,
+                    'interaction_frequency_pct': 0.0,
+                    'question_quality_pct': 0.0,
+                    'student_uptake_index_pct': 0.0,
+                    'question_distribution_stability_pct': 0.0,
+                    'overall_interaction_pct': 0.0,
                     'cognitive_level': 'low',
                     'high_level_questions': [],
                     'all_questions': [],
@@ -2116,10 +2184,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'cognitive_level_index': 0
                 }
             return {
-                'score': 6.5,
-                'interaction_frequency': 6.5,
-                'question_quality': 6.5,
-                'student_engagement_opportunities': 6.5,
+                'score': 5.0,
+                'interaction_frequency': 5.0,
+                'question_quality': 5.0,
+                'student_uptake_index': 5.0,
+                'student_engagement_opportunities': 5.0,
+                'question_distribution_stability': 0.0,
+                'interaction_frequency_pct': 50.0,
+                'question_quality_pct': 50.0,
+                'student_uptake_index_pct': 50.0,
+                'question_distribution_stability_pct': 0.0,
+                'overall_interaction_pct': 37.5,
                 'cognitive_level': 'medium',
                 'high_level_questions': [],
                 'all_questions': fallback_questions,
@@ -2171,11 +2246,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         
         return evidence_sentences[:2]  # Return max 2 pieces of evidence
         
-    async def generate_comprehensive_summary(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, overall_score: float, transcript_text: str = "") -> Dict[str, Any]:
+    async def generate_comprehensive_summary(self, speech_analysis: Dict, visual_analysis: Dict, pedagogical_analysis: Dict, interaction_analysis: Dict, overall_score: float, transcript_text: str = "", lecture_context: str = "") -> Dict[str, Any]:
         """
         Generate comprehensive evidence-based summary
         """
         transcript = speech_analysis.get('transcript', transcript_text)
+        lc = (lecture_context or "").strip()
+        lc_section = ""
+        if lc:
+            lc_section = f"\n\nInstructor-provided lecture context (subject, topic, learning outcomes, etc.):\n{lc}\n"
         
         # Extract evidence from transcript
         evidence_quotes = self.extract_evidence_from_transcript(transcript)
@@ -2191,6 +2270,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     3. Assesses cognitive skill development
                     4. Uses the provided evidence from transcript to support assessment
                     5. Gives actionable, specific recommendations
+                    6. Aligns remarks with any instructor-provided lecture context when relevant
                     
                     Evidence from transcript to use in your assessment: {evidence_quotes}
                     
@@ -2201,7 +2281,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     "content": f"""Create a comprehensive teaching evaluation summary.
                     
                     Overall Score: {overall_score}/10
-                    
+                    {lc_section}
                     Speech Analysis: {speech_analysis.get('speaking_rate', 0)} WPM, {speech_analysis.get('filler_ratio', 0)*100:.1f}% filler words
                     Visual Engagement: {visual_analysis.get('scores', {}).get('engagement', 0)}/10
                     Pedagogical Quality: {pedagogical_analysis.get('content_organization', 0)}/10 organization
@@ -2581,6 +2661,23 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 justification = "Students are observers only."
                 remarks = ""
         
+        elif metric_name == "question_distribution_stability":
+            if score >= 9.0:
+                justification = "Questions well distributed across the lecture; sustains engagement throughout."
+                remarks = ""
+            elif score >= 7.5:
+                justification = "Good spread of questions with minor clustering."
+                remarks = ""
+            elif score >= 6.0:
+                justification = "Some spread but questions tend to cluster in parts of the lecture."
+                remarks = ""
+            elif score >= 4.0:
+                justification = "Questions concentrated in a limited portion of the session."
+                remarks = ""
+            else:
+                justification = "Questions clustered in one segment or too few to assess distribution."
+                remarks = ""
+        
         # Presentation Skills Metrics
         elif metric_name == "energy":
             if score >= 9.0:
@@ -2771,12 +2868,19 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 }
             },
 
-            # NEW: Interaction & Engagement Analysis (ICAP: Interactive / Constructive / Active / Passive)
+            # NEW: Interaction & Engagement (20% sub-category): QD, Question quality, SUI, QDS → percentages
             'interaction_engagement': {
                 'score': round(interaction_score, 1),
-                'interaction_frequency': interaction_analysis.get('interaction_frequency', 7),
-                'question_quality': interaction_analysis.get('question_quality', 7),
-                'student_engagement_opportunities': interaction_analysis.get('student_engagement_opportunities', 7),
+                'interaction_frequency': interaction_analysis.get('interaction_frequency', 0),
+                'question_quality': interaction_analysis.get('question_quality', 0),
+                'student_uptake_index': interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0)),
+                'student_engagement_opportunities': interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0)),
+                'question_distribution_stability': interaction_analysis.get('question_distribution_stability', 0),
+                'interaction_frequency_pct': interaction_analysis.get('interaction_frequency_pct', 0),
+                'question_quality_pct': interaction_analysis.get('question_quality_pct', 0),
+                'student_uptake_index_pct': interaction_analysis.get('student_uptake_index_pct', 0),
+                'question_distribution_stability_pct': interaction_analysis.get('question_distribution_stability_pct', 0),
+                'overall_interaction_pct': interaction_analysis.get('overall_interaction_pct', 0),
                 'cognitive_level': interaction_analysis.get('cognitive_level', 'medium'),
                 'total_questions': interaction_analysis.get('total_questions', 0),
                 'total_interactions': interaction_analysis.get('total_interactions', 0),
@@ -2787,14 +2891,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'interaction_moments': interaction_analysis.get('interaction_moments', []),
                 'feedback': [
                     f"Asked {interaction_analysis.get('total_questions', 0)} questions at {interaction_analysis.get('cognitive_level', 'medium')} cognitive level",
-                    f"Interaction frequency: {interaction_analysis.get('interaction_frequency', 7)}/10",
-                    f"Question quality: {interaction_analysis.get('question_quality', 7)}/10"
+                    f"Interaction frequency: {interaction_analysis.get('interaction_frequency_pct', 0)}% | Question quality: {interaction_analysis.get('question_quality_pct', 0)}% | SUI: {interaction_analysis.get('student_uptake_index_pct', 0)}% | QDS: {interaction_analysis.get('question_distribution_stability_pct', 0)}%",
+                    f"Overall interaction (20% category): {interaction_analysis.get('overall_interaction_pct', 0)}%"
                 ],
                 # Explanations based on rubric
                 'explanations': {
-                    'question_frequency': self.get_rubric_explanation('question_frequency', interaction_analysis.get('interaction_frequency', 7), interaction_analysis.get('interaction_frequency', 7)),
-                    'cognitive_level': self.get_rubric_explanation('cognitive_level', interaction_analysis.get('question_quality', 7), interaction_analysis.get('question_quality', 7)),
-                    'interaction_opportunity': self.get_rubric_explanation('interaction_opportunity', interaction_analysis.get('student_engagement_opportunities', 7), interaction_analysis.get('student_engagement_opportunities', 7))
+                    'question_frequency': self.get_rubric_explanation('question_frequency', interaction_analysis.get('interaction_frequency', 0), interaction_analysis.get('interaction_frequency', 0)),
+                    'cognitive_level': self.get_rubric_explanation('cognitive_level', interaction_analysis.get('question_quality', 0), interaction_analysis.get('question_quality', 0)),
+                    'interaction_opportunity': self.get_rubric_explanation('interaction_opportunity', interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0)), interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0))),
+                    'question_distribution_stability': self.get_rubric_explanation('question_distribution_stability', interaction_analysis.get('question_distribution_stability', 0), interaction_analysis.get('question_distribution_stability', 0))
                 }
             },
             
@@ -2912,7 +3017,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         
         # Generate Comprehensive Summary AFTER building the result dict
         comprehensive_summary = await self.generate_comprehensive_summary(
-            speech_analysis, visual_analysis, pedagogical_analysis, interaction_analysis, overall_score, speech_analysis.get('transcript', '')
+            speech_analysis,
+            visual_analysis,
+            pedagogical_analysis,
+            interaction_analysis,
+            overall_score,
+            speech_analysis.get('transcript', ''),
+            lecture_context=getattr(self, "lecture_context", None) or "",
         )
         
         result['comprehensive_summary'] = comprehensive_summary

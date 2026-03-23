@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -512,7 +512,12 @@ async def validate_passkey(request: Request, passkey_data: dict):
         )
 
 @app.post("/upload-video")
-async def upload_video(request: Request, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None,
+    lecture_context: Optional[str] = Form(None),
+):
     """
     Upload a lecture video for enhanced AI-powered analysis with queue management
     """
@@ -545,6 +550,8 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
     
     # Generate unique ID for this analysis
     analysis_id = str(uuid.uuid4())
+    # Optional user-provided context (subject, topic, ILOs, etc.) for LLM-informed scoring
+    ctx_stored = (lecture_context or "").strip()[:20000]
     
     # Register this upload in analysis_results for tracking
     import pytz
@@ -558,7 +565,8 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
         "started_at": singapore_time.isoformat(),
         "client_ip": client_ip,
         "filename": file.filename,
-        "file_size": getattr(file, 'size', None)
+        "file_size": getattr(file, 'size', None),
+        "lecture_context": ctx_stored,
     }
     
     # Save the uploaded file (always save, even if queued)
@@ -631,7 +639,8 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
             "client_ip": client_ip,
             "queued_at": singapore_time.isoformat(),
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"],
-            "file_path": str(file_path)
+            "file_path": str(file_path),
+            "lecture_context": ctx_stored,
         })
         
         # Initialize analysis result as queued
@@ -648,7 +657,8 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
             "file_size": file.size,
             "client_ip": client_ip,
             "queued_at": singapore_time.isoformat(),
-            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"],
+            "lecture_context": ctx_stored,
         }
         
         response_data = {
@@ -686,6 +696,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
         "filename": file.filename,
         "file_size": file_path.stat().st_size if file_path.exists() else getattr(file, 'size', 0),
         "client_ip": client_ip,
+        "lecture_context": ctx_stored,
         "analysis_config": {
             "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
             "frame_interval": current_config.get("sampling_config", {}).get("frame_interval_seconds", 6),
@@ -704,7 +715,7 @@ async def upload_video(request: Request, file: UploadFile = File(...), backgroun
         "progress": 5
     })
 
-    # Start enhanced analysis in background
+    # Start enhanced analysis in background (lecture_context is on analysis_results[analysis_id])
     if AI_AVAILABLE:
         background_tasks.add_task(process_video_with_enhanced_ai, analysis_id, file_path)
     else:
@@ -1283,10 +1294,14 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
             await update_progress(aid, progress, message, step_data)
         
         # Run the AI analysis with live progress updates
+        lc = ""
+        if analysis_id in analysis_results:
+            lc = analysis_results[analysis_id].get("lecture_context") or ""
         results = await video_processor.process_video(
             video_path=file_path,
             analysis_id=analysis_id,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            lecture_context=lc,
         )
         
         # Update with final results
