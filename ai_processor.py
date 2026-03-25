@@ -308,29 +308,28 @@ class VideoAnalysisProcessor:
         duration_minutes = duration_seconds / 60
         duration_hours = duration_minutes / 60
         
-        # Determine frame extraction interval based on video duration
-        # 1. If video < 1 minute: extract every 20 seconds
-        # 2. If video < 1 hour: extract every 1 minute (60 seconds)
-        # 3. If video 1-2 hours: extract every 2 minutes (120 seconds)
-        # 4. Maximum 60 frames for any video
-        if duration_minutes < 1.0:
-            frame_interval_seconds = 20  # 20 seconds for videos < 1 minute
-        elif duration_hours < 1.0:
-            frame_interval_seconds = 60  # 1 minute
+        # Frame sampling: for lectures ≥ 1 hour, use exactly 20 frames spread evenly across duration.
+        # Otherwise: interval rules below, capped at 60 frames.
+        if duration_seconds >= 3600:
+            frames_to_extract = 20
+            frame_interval_seconds = duration_seconds / frames_to_extract
         else:
-            frame_interval_seconds = 120  # 2 minutes
-        
-        # Calculate how many frames we would extract with this interval
-        estimated_frames = int(duration_seconds / frame_interval_seconds)
-        
-        # Cap at maximum 60 frames
-        max_frames = 60
-        frames_to_extract = min(estimated_frames, max_frames)
-        
-        # If we would extract more than max_frames, adjust interval to evenly distribute
-        if estimated_frames > max_frames:
-            frame_interval_seconds = duration_seconds / max_frames
-            frames_to_extract = max_frames
+            # 1. If video < 1 minute: extract every 20 seconds
+            # 2. If video < 1 hour: extract every 1 minute (60 seconds)
+            # 3. If video 1-2 hours (handled above): N/A
+            if duration_minutes < 1.0:
+                frame_interval_seconds = 20  # 20 seconds for videos < 1 minute
+            elif duration_hours < 1.0:
+                frame_interval_seconds = 60  # 1 minute
+            else:
+                frame_interval_seconds = 120  # 2 minutes (should not hit; ≥1h uses 20-frame rule)
+
+            estimated_frames = int(duration_seconds / frame_interval_seconds)
+            max_frames = 60
+            frames_to_extract = min(estimated_frames, max_frames)
+            if estimated_frames > max_frames:
+                frame_interval_seconds = duration_seconds / max_frames
+                frames_to_extract = max_frames
         
         frame_interval_frames = int(fps * frame_interval_seconds)
         
@@ -1620,6 +1619,11 @@ Return only the processed transcript with proper punctuation and sentence segmen
         for k, v in defaults.items():
             if k not in p or p[k] is None:
                 p[k] = v
+        # Evidence strings for UI "Why this score" (optional; filled by LLM)
+        for k in defaults.keys():
+            ek = f"evidence_{k}"
+            if ek not in p or p[ek] is None:
+                p[ek] = ""
         return p
 
     def _augment_causal_reasoning_depth(self, transcript: str, llm_score: float) -> float:
@@ -1650,6 +1654,8 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 "student_question_cognitive_score": 0.0,
                 "student_feedback_confidence": "none",
                 "student_feedback_remarks": "Transcript too short to assess audience questions.",
+                "audience_questions": [],
+                "audience_question_count": 0,
             }
         try:
             response = openai_client.chat.completions.create(
@@ -1663,14 +1669,16 @@ Return JSON only:
 - student_question_frequency_score: number 0-10 (density of clear audience/student questions)
 - student_question_cognitive_score: number 0-10 (Bloom-style depth of those questions)
 - confidence: one of none|low|medium|high
-- remarks: short note (e.g. no separate audience audio)""",
+- remarks: short note (e.g. no separate audience audio)
+- audience_questions: array of objects {{"question": string, "context": string}} listing each distinct student/audience question you can identify (empty if none)
+- audience_question_count: integer (length of audience_questions)""",
                     },
                     {
                         "role": "user",
                         "content": f"Transcript:\n{transcript[:12000]}",
                     },
                 ],
-                max_completion_tokens=400,
+                max_completion_tokens=800,
             )
             txt = response.choices[0].message.content
             if not txt:
@@ -1682,11 +1690,16 @@ Return JSON only:
                 data["student_question_cognitive_score"] = 0.0
             sf = float(data.get("student_question_frequency_score", 0) or 0)
             sc = float(data.get("student_question_cognitive_score", 0) or 0)
+            aq = data.get("audience_questions") or []
+            if not isinstance(aq, list):
+                aq = []
             return {
                 "student_question_frequency_score": round(min(10.0, max(0.0, sf)), 1),
                 "student_question_cognitive_score": round(min(10.0, max(0.0, sc)), 1),
                 "student_feedback_confidence": conf,
                 "student_feedback_remarks": data.get("remarks", ""),
+                "audience_questions": aq[:30],
+                "audience_question_count": int(data.get("audience_question_count") if data.get("audience_question_count") is not None else len(aq)),
             }
         except Exception as e:
             logger.warning(f"Student feedback metrics fallback: {e}")
@@ -1695,6 +1708,8 @@ Return JSON only:
                 "student_question_cognitive_score": 0.0,
                 "student_feedback_confidence": "none",
                 "student_feedback_remarks": "Could not estimate audience questions; defaulting to 0 (typical for single-speaker webcast).",
+                "audience_questions": [],
+                "audience_question_count": 0,
             }
 
     async def analyze_pedagogy_enhanced(
@@ -1732,6 +1747,8 @@ C) Use of Examples / Representation: example_quality_frequency, analogy_concept_
 
 Also provide legacy aggregate scores (1-10): content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness.
 
+For EACH of the nine MARS criteria above, add evidence_<criterion_key>: a string (3-5 sentences) explaining WHY that score. Each must cite at least one short verbatim phrase from the transcript when possible, and give an approximate time (e.g. "around 2:30") when you can infer it from the excerpt. If no clear quote exists, still reference concrete patterns (e.g. number of examples, presence of recap).
+
 Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).""",
                 },
                 {
@@ -1742,11 +1759,14 @@ Return a single JSON object with ALL keys:
 structural_sequencing, logical_consistency, closure_framing,
 conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation,
 example_quality_frequency, analogy_concept_bridging, representation_diversity,
+evidence_structural_sequencing, evidence_logical_consistency, evidence_closure_framing,
+evidence_conceptual_accuracy, evidence_causal_reasoning_depth, evidence_multi_perspective_explanation,
+evidence_example_quality_frequency, evidence_analogy_concept_bridging, evidence_representation_diversity,
 content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
 strengths, improvements, recommendations, detailed_analysis""",
                 },
             ],
-            max_completion_tokens=1800,
+            max_completion_tokens=3800,
         )
 
         try:
@@ -2136,6 +2156,8 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             effective_minutes = duration_minutes
             duration_seconds = duration_minutes * 60.0
             
+            eqd_per_minute = 0.0
+            questions_per_minute = 0.0
             if total_questions == 0:
                 interaction_frequency = 0.0
                 question_quality = 0.0
@@ -2170,6 +2192,8 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 
                 # 2) Student Uptake Index (SUI): Constructive+Interactive per minute -> 0-10
                 eqd = (count_constructive + count_interactive) / effective_minutes
+                eqd_per_minute = round(eqd, 3)
+                questions_per_minute = round(total_questions / effective_minutes, 3)
                 student_uptake_index = round(min(10.0, max(0.0, 3.0 + eqd * 2.5)), 1)
                 
                 # 3) Question Distribution Stability (QDS): spread of questions over lecture -> 0-10
@@ -2213,7 +2237,9 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'high_level_questions_count': high_level_questions_count,
                 'total_interactions': total_questions,
                 'icap_counts': {'passive': count_passive, 'active': count_active, 'constructive': count_constructive, 'interactive': count_interactive},
-                'cognitive_level_index': round((2 * count_constructive + 3 * count_interactive) / 3.0 / max(1, total_questions) * 100, 1) if total_questions else 0
+                'cognitive_level_index': round((2 * count_constructive + 3 * count_interactive) / 3.0 / max(1, total_questions) * 100, 1) if total_questions else 0,
+                'eqd_per_minute': eqd_per_minute,
+                'questions_per_minute': questions_per_minute,
             }
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
@@ -2250,8 +2276,12 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'total_questions': 0,
                     'total_interactions': 0,
                     'icap_counts': {'passive': 0, 'active': 0, 'constructive': 0, 'interactive': 0},
-                    'cognitive_level_index': 0
+                    'cognitive_level_index': 0,
+                    'eqd_per_minute': 0.0,
+                    'questions_per_minute': 0.0,
                 }
+            dm_fb = max(0.1, speech_analysis.get('duration_minutes', 1))
+            qpm_fb = round(total_questions / dm_fb, 3)
             return {
                 'score': 5.0,
                 'interaction_frequency': 5.0,
@@ -2271,7 +2301,9 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'total_questions': total_questions,
                 'total_interactions': total_questions,
                 'icap_counts': {'passive': 0, 'active': total_questions, 'constructive': 0, 'interactive': 0},
-                'cognitive_level_index': 0
+                'cognitive_level_index': 0,
+                'eqd_per_minute': 0.0,
+                'questions_per_minute': qpm_fb,
             }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
@@ -2843,6 +2875,33 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             presentation_score * category_weights["presentation_skills"]
         )
         overall_score = round(mars_overall_score, 1)
+
+        _mars_ck = (
+            'structural_sequencing', 'logical_consistency', 'closure_framing',
+            'conceptual_accuracy', 'causal_reasoning_depth', 'multi_perspective_explanation',
+            'example_quality_frequency', 'analogy_concept_bridging', 'representation_diversity',
+        )
+        _content_criteria_evidence = {
+            k: str(pedagogical_analysis.get(f'evidence_{k}', '') or '').strip()
+            for k in _mars_ck
+        }
+        _wpm = float(speech_analysis.get('speaking_rate', 0) or 0)
+        _fr_pct = round(float(speech_analysis.get('filler_ratio', 0) or 0) * 100.0, 2)
+        _vv = float(speech_analysis.get('voice_variety_score', 0) or 0)
+        _pe = float(speech_analysis.get('pause_effectiveness_score', 0) or 0)
+        _tconf = round(float(speech_analysis.get('confidence', 0.8) or 0) * 100.0, 1)
+        _delivery_speech_evidence = (
+            f"Speech category score {round(speech_score, 1)}/10. Quantitative evidence: {_wpm:.0f} WPM; "
+            f"filler ratio {_fr_pct}%; voice variety index {_vv:.3f}; pause effectiveness index {_pe:.3f}; "
+            f"transcription confidence {_tconf}%."
+        )
+        _vs = visual_analysis.get('scores', {}) or {}
+        _delivery_body_evidence = (
+            f"Body language category score {round(visual_score, 1)}/10. Frame-averaged vision scores: "
+            f"eye contact {_vs.get('eye_contact', '—')}/10, gestures {_vs.get('gestures', '—')}/10, "
+            f"posture {_vs.get('posture', '—')}/10, facial engagement {_vs.get('engagement', '—')}/10, "
+            f"professionalism {_vs.get('professionalism', '—')}/10."
+        )
         
         # Build the result dictionary
         result = {
@@ -2874,6 +2933,11 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'analogy_concept_bridging': round(float(pedagogical_analysis.get('analogy_concept_bridging', 7) or 7), 1),
                     'representation_diversity': round(float(pedagogical_analysis.get('representation_diversity', 7) or 7), 1),
                 },
+                'content_criteria_evidence': _content_criteria_evidence,
+                'delivery_criteria_evidence': {
+                    'speech': _delivery_speech_evidence,
+                    'body': _delivery_body_evidence,
+                },
                 'delivery_components': {
                     'speech_analysis_score': round(speech_score, 2),
                     'body_language_score': round(visual_score, 2),
@@ -2893,6 +2957,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             # Detailed Speech Analysis
             'speech_analysis': {
                 'score': round(speech_score, 1),
+                'duration_minutes': round(float(speech_analysis.get('duration_minutes', 0) or 0), 2),
                 'speaking_rate': round(speech_analysis.get('speaking_rate', 0), 1),
                 'clarity': round(10 - (speech_analysis.get('filler_ratio', 0) * 20), 1),
                 'pace': round(min(10, max(1, 10 - abs(speech_analysis.get('speaking_rate', 150) - 150) / 20)), 1),
@@ -3004,6 +3069,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             # NEW: Interaction & Engagement (20% sub-category): QD, Question quality, SUI, QDS → percentages
             'interaction_engagement': {
                 'score': round(interaction_score, 1),
+                'duration_minutes': round(float(speech_analysis.get('duration_minutes', 0) or 0), 2),
                 'interaction_frequency': interaction_analysis.get('interaction_frequency', 0),
                 'question_quality': interaction_analysis.get('question_quality', 0),
                 'student_uptake_index': interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0)),
@@ -3024,6 +3090,10 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'total_interactions': interaction_analysis.get('total_interactions', 0),
                 'high_level_questions': interaction_analysis.get('high_level_questions', []),
                 'all_questions': interaction_analysis.get('all_questions', []),
+                'audience_questions': interaction_analysis.get('audience_questions', []),
+                'audience_question_count': interaction_analysis.get('audience_question_count', 0),
+                'eqd_per_minute': round(float(interaction_analysis.get('eqd_per_minute', 0) or 0), 4),
+                'questions_per_minute': round(float(interaction_analysis.get('questions_per_minute', 0) or 0), 4),
                 'icap_counts': interaction_analysis.get('icap_counts', {}),
                 'cognitive_level_index': interaction_analysis.get('cognitive_level_index', 0),
                 'interaction_moments': interaction_analysis.get('interaction_moments', []),

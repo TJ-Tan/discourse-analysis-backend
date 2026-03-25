@@ -904,107 +904,143 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         
         openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         
-        # Extract data from request
+        # Extract data from request (MARS + legacy fields)
         overall_score = summary_data.get('overall_score', 0)
+        content_score = summary_data.get('content_score', summary_data.get('teaching_effectiveness_score', 0))
+        delivery_score = summary_data.get('delivery_score', 0)
+        engagement_score = summary_data.get('engagement_score', 0)
         speech_score = summary_data.get('speech_score', 0)
         body_language_score = summary_data.get('body_language_score', 0)
         teaching_effectiveness_score = summary_data.get('teaching_effectiveness_score', 0)
         interaction_score = summary_data.get('interaction_score', 0)
         presentation_score = summary_data.get('presentation_score', 0)
         high_level_questions = summary_data.get('high_level_questions', [])
+        all_questions = summary_data.get('all_questions', [])
+        audience_questions = summary_data.get('audience_questions', [])
+        icap_counts = summary_data.get('icap_counts', {})
         total_questions = summary_data.get('total_questions', 0)
+        questions_per_minute = summary_data.get('questions_per_minute', 0)
+        eqd_per_minute = summary_data.get('eqd_per_minute', 0)
         transcript_excerpt = summary_data.get('transcript_excerpt', '')
         sample_frames_count = summary_data.get('sample_frames_count', 0)
         filler_words = summary_data.get('filler_words', [])
         explanations = summary_data.get('explanations', {})
+        extra_strengths = summary_data.get('extra_strengths', []) or []
+        extra_growth = summary_data.get('extra_growth', []) or []
         
-        # Prepare high-level questions text
+        # Instructor questions with CLI (evidence)
         questions_text = ""
-        if high_level_questions and len(high_level_questions) > 0:
-            questions_text = "\n\nHigh-Level Questions Asked:\n"
-            for idx, q in enumerate(high_level_questions[:5], 1):
+        qsrc = all_questions if all_questions else high_level_questions
+        if qsrc and len(qsrc) > 0:
+            questions_text = "\n\nInstructor questions detected (with CLI where available):\n"
+            for idx, q in enumerate(qsrc[:25], 1):
                 question_text = q.get('question', q.get('text', ''))
                 timestamp = q.get('precise_timestamp', q.get('timestamp', ''))
-                questions_text += f"{idx}. [{timestamp}] {question_text}\n"
+                icap = q.get('icap', '')
+                questions_text += f"{idx}. [{timestamp}] ({icap}) {question_text}\n"
+        elif total_questions == 0:
+            questions_text = "\n\nNo instructor questions ending with '?' were detected in the transcript."
+        
+        audience_block = ""
+        if audience_questions and len(audience_questions) > 0:
+            audience_block = "\n\nStudent/audience questions (model-estimated from transcript):\n"
+            for idx, aq in enumerate(audience_questions[:15], 1):
+                if isinstance(aq, dict):
+                    audience_block += f"{idx}. {aq.get('question', aq.get('text', ''))} — {aq.get('context', '')}\n"
+                else:
+                    audience_block += f"{idx}. {aq}\n"
         
         # Prepare filler words text
         filler_text = ""
         if filler_words and len(filler_words) > 0:
             filler_text = f"\n\nFiller Words Detected: {', '.join([f['word'] for f in filler_words[:5]])}"
         
-        # Find strongest category
-        scores = {
-            'Speech Analysis': speech_score,
-            'Body Language': body_language_score,
-            'Teaching Effectiveness': teaching_effectiveness_score,
-            'Interaction & Engagement': interaction_score,
-            'Presentation Skills': presentation_score
+        # MARS main categories for strength/weakness focus
+        mars_scores = {
+            'Content': float(content_score or 0),
+            'Delivery': float(delivery_score or 0),
+            'Engagement': float(engagement_score or 0),
         }
-        strongest_category = max(scores.items(), key=lambda x: x[1])
+        strongest_category = max(mars_scores.items(), key=lambda x: x[1])
+        sorted_mars = sorted(mars_scores.items(), key=lambda x: x[1])
+        weakest_categories = sorted_mars[:2] if len(sorted_mars) >= 2 else sorted_mars
         
-        # Find weakest categories (for improvements)
-        sorted_scores = sorted(scores.items(), key=lambda x: x[1])
-        weakest_categories = sorted_scores[:2] if len(sorted_scores) >= 2 else sorted_scores
+        icap_line = ""
+        if icap_counts:
+            icap_line = (
+                f"ICAP question counts — Passive: {icap_counts.get('passive', 0)}, "
+                f"Active: {icap_counts.get('active', 0)}, "
+                f"Constructive: {icap_counts.get('constructive', 0)}, "
+                f"Interactive: {icap_counts.get('interactive', 0)}."
+            )
+        
+        extra_merge = ""
+        if extra_strengths:
+            extra_merge += "\n\nRubrik additional strengths to weave into personalised_feedback as full sentences: " + " | ".join(extra_strengths[:6])
+        if extra_growth:
+            extra_merge += "\n\nRubrik growth opportunities to weave into personalised_feedback as full sentences: " + " | ".join(extra_growth[:6])
+        
+        zero_q_rule = (
+            "If total instructor questions is 0, do NOT claim the session 'demonstrated effective questioning' or similar; "
+            "acknowledge the absence of detected questions and focus on other evidence (delivery, content signals)."
+        )
         
         response = openai_client.chat.completions.create(
             model="gpt-5-nano",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert educational evaluator creating a personalized feedback summary for a lecture analysis report. Your task is to:
+                    "content": """You are an expert educational evaluator creating a MARS lecture analysis summary.
 
-1. Write a personalized feedback paragraph (80-100 words) that:
-   - References the overall score and key findings
-   - Mentions high-level questions as evidence of analytical thinking promotion
-   - Includes at least one actual question from the list provided
-   - Is encouraging yet constructive
+1. personalised_feedback: one cohesive paragraph (120-180 words) that:
+   - States the MARS Evaluated Final Score and briefly interprets Content, Delivery, Engagement (use the numbers provided).
+   - Is evidence-led: cite transcript patterns, question counts, ICAP mix, speaking metrics, or sample frames — never vague praise.
+   - If instructor questions exist, quote or paraphrase at least one real question from the list with its rough time/CLI label when given.
+   - If NO instructor questions were detected (count 0), do not imply strong questioning; discuss other strengths/limitations honestly.
+   - Weave in any 'additional strengths' and 'growth opportunities' phrases supplied as natural sentences (do not label them as separate sections).
+   - Note that analysis is from webcast + algorithm + LLM and may not capture full classroom impact.
 
-2. Identify ONE strongest strength with:
-   - Clear title
-   - Description explaining why it's a strength
-   - Evidence from transcript or analysis (quote or specific metric)
+2. strongest_strength: one item with title, description, evidence (evidence must cite a metric, quote, or count).
 
-3. Identify 1-2 areas for improvement with:
-   - Area name
-   - Specific recommendation
-   - Evidence from scoring/metrics
+3. improvements: 1-2 growth opportunities (NOT titled 'areas for improvement'); each needs area, description, evidence.
 
-Be specific, evidence-based, and professional. Use British English spelling."""
+Use British English. Be specific and professional."""
                 },
                 {
                     "role": "user",
-                    "content": f"""Generate a personalized PDF summary for this lecture analysis.
+                    "content": f"""Generate the summary.
 
-Overall Score: {overall_score}/10
+MARS Evaluated Final Score: {overall_score}/10
+Content: {content_score}/10 | Delivery: {delivery_score}/10 | Engagement: {engagement_score}/10
 
-Category Scores:
-- Speech Analysis: {speech_score}/10
-- Body Language: {body_language_score}/10
-- Teaching Effectiveness: {teaching_effectiveness_score}/10
-- Interaction & Engagement: {interaction_score}/10
-- Presentation Skills: {presentation_score}/10
+Legacy detail (reference): Speech {speech_score}/10, Body {body_language_score}/10, Interaction category {interaction_score}/10.
 
-Strongest Category: {strongest_category[0]} ({strongest_category[1]}/10)
-Weakest Categories: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
+Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)
+Weaker MARS blocks: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
 
-Total Questions Asked: {total_questions}
+Total instructor questions detected: {total_questions}
+Questions per minute (instructor): {questions_per_minute}
+Constructive+Interactive per minute (for SUI): {eqd_per_minute}
+{icap_line}
 {questions_text}
+{audience_block}
 
-Transcript Excerpt (first 2000 chars):
+Transcript excerpt:
 {transcript_excerpt[:2000]}
 
-Sample Frames Extracted: {sample_frames_count}
+Sample frames analysed: {sample_frames_count}
 {filler_text}
+{extra_merge}
 
-Return as JSON with:
-- personalized_feedback: string (80-100 words paragraph)
+Rules: {zero_q_rule}
+
+Return JSON only:
+- personalized_feedback: string
 - strongest_strength: {{"title": string, "description": string, "evidence": string}}
-- improvements: [{{"area": string, "description": string, "evidence": string}}, ...] (1-2 items)
-
-Ensure the personalized_feedback includes at least one high-level question as evidence."""
+- improvements: [{{"area": string, "description": string, "evidence": string}}, ...]"""
                 }
             ],
-            max_completion_tokens=1500
+            max_completion_tokens=2200
             # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
         
@@ -1017,37 +1053,56 @@ Ensure the personalized_feedback includes at least one high-level question as ev
             
             # Ensure all required fields exist
             if 'personalized_feedback' not in summary:
-                summary['personalized_feedback'] = f"This lecture achieved an overall score of {overall_score}/10, demonstrating effective teaching techniques."
+                if total_questions == 0:
+                    summary['personalized_feedback'] = (
+                        f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
+                        f"No instructor questions were detected in the transcript; interpret engagement scores with caution. "
+                        f"Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)."
+                    )
+                else:
+                    summary['personalized_feedback'] = (
+                        f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
+                        f"The session included {total_questions} instructor question(s) (see rubric breakdown for wording and CLI)."
+                    )
             
             if 'strongest_strength' not in summary:
                 summary['strongest_strength'] = {
                     'title': strongest_category[0],
-                    'description': f'Strong performance in {strongest_category[0].lower()} with a score of {strongest_category[1]}/10.',
-                    'evidence': f'Score of {strongest_category[1]}/10 in {strongest_category[0]}'
+                    'description': f'Stronger performance in {strongest_category[0].lower()} ({strongest_category[1]}/10 on this block).',
+                    'evidence': f'MARS block score {strongest_category[1]}/10 for {strongest_category[0]}; overall {overall_score}/10.'
                 }
             
             if 'improvements' not in summary or len(summary['improvements']) == 0:
                 summary['improvements'] = [{
                     'area': weakest_categories[0][0],
-                    'description': f'Consider focusing on improving {weakest_categories[0][0].lower()} which scored {weakest_categories[0][1]}/10.',
-                    'evidence': f'Current score: {weakest_categories[0][1]}/10'
+                    'description': f'Consider strengthening {weakest_categories[0][0].lower()} (currently {weakest_categories[0][1]}/10).',
+                    'evidence': f'MARS block score {weakest_categories[0][1]}/10 vs strongest block {strongest_category[1]}/10.'
                 }]
             
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
             # Fallback summary
+            q_note = (
+                f"{total_questions} instructor question(s) detected; see report for wording and CLI."
+                if total_questions > 0
+                else "No instructor questions were detected in the transcript; questioning-related scores rely on absence of '?'-terminated prompts."
+            )
             fallback_summary = {
-                'personalized_feedback': f"This lecture achieved an overall score of {overall_score}/10. The instructor demonstrated effective teaching techniques with {total_questions} questions asked throughout the session{f', including high-level questions that promote analytical thinking' if high_level_questions else ''}.",
+                'personalized_feedback': (
+                    f"MARS Evaluated Final Score {overall_score}/10 — Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10. "
+                    f"{q_note} "
+                    f"Evidence: sample frames {sample_frames_count}; transcript excerpt available in the report."
+                ),
                 'strongest_strength': {
                     'title': strongest_category[0],
-                    'description': f'Strong performance in {strongest_category[0].lower()} with a score of {strongest_category[1]}/10.',
-                    'evidence': f'Score of {strongest_category[1]}/10 in {strongest_category[0]}'
+                    'description': f'Stronger MARS block: {strongest_category[0].lower()} ({strongest_category[1]}/10).',
+                    'evidence': f'MARS {strongest_category[0]} score {strongest_category[1]}/10.'
                 },
                 'improvements': [{
                     'area': weakest_categories[0][0],
-                    'description': f'Consider focusing on improving {weakest_categories[0][0].lower()} which scored {weakest_categories[0][1]}/10.',
-                    'evidence': f'Current score: {weakest_categories[0][1]}/10'
+                    'description': f'Growth opportunity in {weakest_categories[0][0].lower()} (score {weakest_categories[0][1]}/10).',
+                    'evidence': f'MARS block comparison: {weakest_categories[0][0]} {weakest_categories[0][1]}/10 vs {strongest_category[0]} {strongest_category[1]}/10.'
                 }]
             }
             if len(weakest_categories) > 1:
