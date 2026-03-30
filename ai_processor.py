@@ -185,6 +185,18 @@ class VideoAnalysisProcessor:
             interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
             sf_metrics = await self.analyze_student_feedback_metrics(speech_analysis)
             interaction_analysis.update(sf_metrics)
+            # Revised SUI: uptake of learner responses (webcast-safe with disclaimer)
+            sui = self._compute_student_uptake_index(speech_analysis.get("transcript") or "", sf_metrics)
+            interaction_analysis["student_uptake_index"] = round(float(sui.get("score") or 0), 1)
+            interaction_analysis["student_uptake_index_evidence"] = sui.get("evidence", "")
+            interaction_analysis["student_uptake_index_pct"] = round(float(interaction_analysis["student_uptake_index"]) * 10.0, 1)
+            # Refresh the 20% interaction category aggregate after SUI override
+            _qd = float(interaction_analysis.get("interaction_frequency", 0) or 0)
+            _cli = float(interaction_analysis.get("question_quality", 0) or 0)
+            _qds = float(interaction_analysis.get("question_distribution_stability", 0) or 0)
+            _sui = float(interaction_analysis.get("student_uptake_index", 0) or 0)
+            interaction_analysis["score"] = round((_qd + _cli + _sui + _qds) / 4.0, 1)
+            interaction_analysis["overall_interaction_pct"] = round(interaction_analysis["score"] * 10.0, 1)
 
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
@@ -1806,8 +1818,9 @@ Return JSON only:
             data = self._safe_json_loads(txt)
             conf = (data.get("confidence") or "none").lower()
             if conf == "none":
-                data["student_question_frequency_score"] = 0.0
-                data["student_question_cognitive_score"] = 0.0
+                # Webcast limitation: if no separate learner voice is detectable, avoid a misleading 0/10.
+                data["student_question_frequency_score"] = 2.0
+                data["student_question_cognitive_score"] = 2.0
             sf = float(data.get("student_question_frequency_score", 0) or 0)
             sc = float(data.get("student_question_cognitive_score", 0) or 0)
             aq = data.get("audience_questions") or []
@@ -1817,20 +1830,59 @@ Return JSON only:
                 "student_question_frequency_score": round(min(10.0, max(0.0, sf)), 1),
                 "student_question_cognitive_score": round(min(10.0, max(0.0, sc)), 1),
                 "student_feedback_confidence": conf,
-                "student_feedback_remarks": data.get("remarks", ""),
+                "student_feedback_remarks": data.get("remarks", "") or (
+                    "Student voice may not be recorded clearly in webcast lectures; learner-question scores are therefore conservative (2/10)."
+                    if conf == "none" else ""
+                ),
                 "audience_questions": aq[:30],
                 "audience_question_count": int(data.get("audience_question_count") if data.get("audience_question_count") is not None else len(aq)),
             }
         except Exception as e:
             logger.warning(f"Student feedback metrics fallback: {e}")
             return {
-                "student_question_frequency_score": 0.0,
-                "student_question_cognitive_score": 0.0,
+                "student_question_frequency_score": 2.0,
+                "student_question_cognitive_score": 2.0,
                 "student_feedback_confidence": "none",
-                "student_feedback_remarks": "Could not estimate audience questions; defaulting to 0 (typical for single-speaker webcast).",
+                "student_feedback_remarks": "Student voice may not be recorded clearly in webcast lectures; learner-question scores are therefore conservative (2/10).",
                 "audience_questions": [],
                 "audience_question_count": 0,
             }
+
+    def _normalise_question_key(self, q: str) -> str:
+        """Normalise question text for matching (lowercase, collapse whitespace, strip punctuation)."""
+        s = (q or "").strip().lower()
+        s = re.sub(r"\s+", " ", s)
+        s = re.sub(r"[^\w\s]", "", s)
+        return s
+
+    def _compute_student_uptake_index(self, transcript: str, sf_metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        SUI definition (revised): extent to which instructor builds upon/incorporates student responses.
+        For webcasts without learner voice, return a conservative score and clear disclaimer.
+        """
+        conf = (sf_metrics.get("student_feedback_confidence") or "none").lower()
+        t = (transcript or "").strip()
+        if conf == "none":
+            return {
+                "score": 2.0,
+                "evidence": "Student voice may not be recorded clearly in webcast lectures; uptake cannot be reliably determined from transcript alone. Scored conservatively (2/10).",
+            }
+        # Heuristic uptake cues (instructor referencing or building on learner input)
+        cues = (
+            "good question", "great question", "as you said", "as someone said", "as one of you said",
+            "as you mentioned", "as mentioned earlier", "building on", "following up on",
+            "to respond to", "answer to your question", "someone asked", "your question",
+        )
+        tl = t.lower()
+        count = sum(tl.count(c) for c in cues)
+        words = max(1, len(t.split()))
+        per_1k = round((count / words) * 1000.0, 2)
+        # Map cue density to 0–10 with a gentle slope; clamp and round.
+        # 0 cues → 2.5; 1/1k → ~4; 3/1k → ~7; >=5/1k → 10
+        score = 2.5 + min(7.5, per_1k * 2.5)
+        score = round(min(10.0, max(0.0, score)), 1)
+        ev = f"Evidence: uptake cues occur ~{per_1k:.2f} per 1,000 words (e.g., “good question”, “building on …”, “to respond to …”)."
+        return {"score": score, "evidence": ev}
 
     async def analyze_pedagogy_enhanced(
         self, speech_analysis: Dict, visual_analysis: Dict, lecture_context: str = ""
@@ -2223,7 +2275,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             # Step 5: Match questions to timestamps from pattern-matched questions
             question_timestamp_map = {}
             for q in all_questions:
-                question_text_clean = q['question'].strip().lower()
+                question_text_clean = self._normalise_question_key(q['question'])
                 question_timestamp_map[question_text_clean] = {
                     'start_time': q['start_time'],
                     'timestamp': self.format_timestamp(q['start_time'])
@@ -2245,7 +2297,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     )
                 )
                 
-                question_text_clean = question_text.lower()
+                question_text_clean = self._normalise_question_key(question_text)
                 timestamp_info = question_timestamp_map.get(question_text_clean)
                 if timestamp_info:
                     timestamp = timestamp_info['timestamp']
@@ -2253,7 +2305,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 else:
                     timestamp, start_time = "00:00", 0
                     for q in all_questions:
-                        if question_text.lower()[:30] in q['question'].lower()[:50] or q['question'].lower()[:30] in question_text.lower()[:50]:
+                        if self._normalise_question_key(question_text)[:28] in self._normalise_question_key(q['question'])[:60] or self._normalise_question_key(q['question'])[:28] in self._normalise_question_key(question_text)[:60]:
                             timestamp = self.format_timestamp(q['start_time'])
                             start_time = q['start_time']
                             break
@@ -2268,6 +2320,10 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 final_all_questions.append(question_entry)
                 if question_entry['is_high_level']:
                     high_level_questions.append(question_entry)
+
+            # Sort questions chronologically for UI readability and for QDS stability
+            final_all_questions.sort(key=lambda x: float(x.get('start_time') or 0))
+            high_level_questions.sort(key=lambda x: float(x.get('start_time') or 0))
             
             high_level_questions_count = count_constructive + count_interactive
             
@@ -2318,6 +2374,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 student_uptake_index = round(min(10.0, max(0.0, 3.0 + eqd * 2.5)), 1)
                 
                 # 3) Question Distribution Stability (QDS): spread of questions over lecture -> 0-10
+                # Use timestamps from the detected question list (chronological) to avoid entropy collapse when text matching fails.
                 question_distribution_stability = self._compute_question_distribution_stability(
                     final_all_questions, duration_seconds
                 )
@@ -3117,6 +3174,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'voice_variety': round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1),
                 'pause_effectiveness': round(speech_analysis.get('pause_effectiveness_score', 0.5) * 10, 1),
                 'feedback': self.generate_speech_feedback_enhanced(speech_analysis),
+                'metric_scores': {
+                    'speaking_rate': round(min(10, max(1, 10 - abs(speech_analysis.get('speaking_rate', 150) - 150) / 20)), 1),
+                    'filler_ratio': round(10 - (speech_analysis.get('filler_ratio', 0) * 20), 1),
+                    'voice_variety': round(speech_analysis.get('voice_variety_score', 0.5) * 10, 1),
+                    'pause_effectiveness': round(speech_analysis.get('pause_effectiveness_score', 0.5) * 10, 1),
+                    'transcription_confidence': round(speech_analysis.get('confidence', 0.8) * 10, 1),
+                },
                 # Raw metrics
                 'raw_metrics': {
                     'total_words': speech_analysis.get('word_count', 0),
@@ -3150,6 +3214,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'frames_analyzed': visual_analysis.get('frames_analyzed', 0),
                 'feedback': self.generate_visual_feedback_enhanced(visual_analysis),
                 'remarks': 'Note: Visual analysis accuracy may be limited if the recording does not adequately capture facial expressions and body gestures due to camera angle, distance, or recording style (e.g., presentation slides with voiceover overlay). Results should be interpreted with consideration of these recording constraints.',
+                'metric_scores': {
+                    'eye_contact': round(visual_analysis.get('scores', {}).get('eye_contact', 7), 1),
+                    'gestures': round(visual_analysis.get('scores', {}).get('gestures', 7), 1),
+                    'posture': round(visual_analysis.get('scores', {}).get('posture', 7), 1),
+                    'facial_engagement': round(visual_analysis.get('scores', {}).get('engagement', 7), 1),
+                    'professionalism': round(visual_analysis.get('scores', {}).get('professionalism', 8), 1),
+                },
                 # Raw metrics
                 'raw_metrics': {
                     'total_frames_extracted': visual_analysis.get('frames_analyzed', 0),

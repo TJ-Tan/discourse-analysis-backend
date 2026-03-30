@@ -921,6 +921,7 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         total_questions = summary_data.get('total_questions', 0)
         questions_per_minute = summary_data.get('questions_per_minute', 0)
         eqd_per_minute = summary_data.get('eqd_per_minute', 0)
+        lecture_context = summary_data.get('lecture_context', '')
         transcript_excerpt = summary_data.get('transcript_excerpt', '')
         sample_frames_count = summary_data.get('sample_frames_count', 0)
         filler_words = summary_data.get('filler_words', [])
@@ -1012,6 +1013,9 @@ Use British English. Be specific and professional."""
 
 MARS Evaluated Final Score: {overall_score}/10
 Content: {content_score}/10 | Delivery: {delivery_score}/10 | Engagement: {engagement_score}/10
+
+Lecture Context & Supplementary Information (submitted by instructor; use to interpret whether pace/terminology/questioning style fits the context):
+{lecture_context[:2000]}
 
 Legacy detail (reference): Speech {speech_score}/10, Body {body_language_score}/10, Interaction category {interaction_score}/10.
 
