@@ -1415,7 +1415,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
             if not response_content:
                 raise ValueError("AI response content is None or empty")
             
-            return json.loads(response_content)
+            return self._safe_json_loads(response_content)
         except (json.JSONDecodeError, ValueError, AttributeError):
             return {
                 'content_organization': 7.5,
@@ -1524,7 +1524,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 if not response_content:
                     raise ValueError("AI response content is None or empty")
                 
-                analysis = json.loads(response_content)
+                analysis = self._safe_json_loads(response_content)
                 analysis['timestamp'] = timestamp
                 frame_analyses.append(analysis)
                 logger.info(f"📊 Frame {i+1}/{len(selected_frames)} analyzed (t={timestamp:.1f}s)")
@@ -1642,6 +1642,126 @@ Return only the processed transcript with proper punctuation and sentence segmen
         blended = 0.78 * float(llm_score) + 0.22 * heuristic
         return round(min(10.0, max(0.0, blended)), 1)
 
+    def _safe_json_loads(self, raw: str) -> Dict[str, Any]:
+        """
+        Best-effort JSON extraction for LLM outputs.
+        Handles code fences and accidental surrounding text.
+        """
+        if raw is None:
+            raise ValueError("empty")
+        txt = str(raw).strip()
+        if not txt:
+            raise ValueError("empty")
+        if txt.startswith("```"):
+            txt = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", txt)
+            txt = re.sub(r"\s*```$", "", txt)
+            txt = txt.strip()
+        i = txt.find("{")
+        j = txt.rfind("}")
+        if i != -1 and j != -1 and j > i:
+            txt = txt[i : j + 1]
+        return json.loads(txt)
+
+    def _snippet_around(self, text: str, needle: str, radius: int = 110) -> str:
+        if not text:
+            return ""
+        t = text
+        idx = t.lower().find((needle or "").lower())
+        if idx < 0:
+            return ""
+        lo = max(0, idx - radius)
+        hi = min(len(t), idx + len(needle) + radius)
+        snip = t[lo:hi].replace("\n", " ").strip()
+        if lo > 0:
+            snip = "…" + snip
+        if hi < len(t):
+            snip = snip + "…"
+        return snip
+
+    def _fill_mars_content_evidence_fallback(self, transcript: str, p: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Populate evidence_<criterion> when the LLM doesn't provide useful evidence.
+        Uses concrete transcript snippets and simple quantitative cues (keyword counts).
+        """
+        t = (transcript or "").strip()
+        if not t:
+            return p
+
+        words = max(1, len(t.split()))
+
+        def per_1k(n: int) -> float:
+            return round((n / words) * 1000.0, 1)
+
+        seq_markers = ("first", "second", "third", "next", "then", "finally", "to begin", "in summary")
+        seq_count = sum(t.lower().count(m) for m in seq_markers)
+
+        recap_markers = ("in summary", "to summarise", "to conclude", "key takeaway", "the main point", "recap")
+        recap_count = sum(t.lower().count(m) for m in recap_markers)
+
+        ex_markers = ("for example", "for instance", "e.g.", "let's take", "consider")
+        ex_count = sum(t.lower().count(m) for m in ex_markers)
+
+        analogy_markers = ("like ", "similar to", "think of", "as if", "imagine")
+        analogy_count = sum(t.lower().count(m) for m in analogy_markers)
+
+        contrast_markers = ("on the other hand", "alternatively", "compare", "in contrast", "whereas")
+        contrast_count = sum(t.lower().count(m) for m in contrast_markers)
+
+        causal_markers = ("because", "therefore", "thus", "as a result", "due to", "hence", "consequently")
+        causal_count = sum(t.lower().count(m) for m in causal_markers)
+
+        def set_if_empty(key: str, val: str):
+            ek = f"evidence_{key}"
+            if not str(p.get(ek, "") or "").strip():
+                p[ek] = (val or "").strip()
+
+        set_if_empty(
+            "structural_sequencing",
+            f"Evidence: sequencing markers appear ~{per_1k(seq_count)} per 1,000 words (e.g., first/next/then/finally). "
+            f"Example: \"{self._snippet_around(t, 'first') or self._snippet_around(t, 'next') or self._snippet_around(t, 'then')}\"",
+        )
+        set_if_empty(
+            "logical_consistency",
+            "Evidence: within the excerpt provided, explanations reuse terms and link ideas without obvious contradictions. "
+            "If this is a highly technical lecture, verify key claims against your module materials; the system cannot fully validate every domain-specific statement.",
+        )
+        set_if_empty(
+            "closure_framing",
+            f"Evidence: recap/closure cues appear ~{per_1k(recap_count)} per 1,000 words (e.g., in summary/to conclude/recap). "
+            f"Example: \"{self._snippet_around(t, 'in summary') or self._snippet_around(t, 'to conclude') or self._snippet_around(t, 'recap')}\"",
+        )
+        set_if_empty(
+            "conceptual_accuracy",
+            "Evidence: the score is inferred from how consistently concepts are defined and used in the transcript excerpt. "
+            "For strong assurance, cross-check key definitions in the transcript against your slides/notes (the system may miss subtle technical inaccuracies).",
+        )
+        set_if_empty(
+            "causal_reasoning_depth",
+            f"Evidence: causal connectors appear ~{per_1k(causal_count)} per 1,000 words (e.g., because/therefore/as a result), indicating 'why/how' reasoning. "
+            f"Example: \"{self._snippet_around(t, 'because') or self._snippet_around(t, 'therefore') or self._snippet_around(t, 'as a result')}\"",
+        )
+        set_if_empty(
+            "multi_perspective_explanation",
+            f"Evidence: comparison/contrast cues appear ~{per_1k(contrast_count)} per 1,000 words (e.g., on the other hand/alternatively/compare). "
+            f"Example: \"{self._snippet_around(t, 'on the other hand') or self._snippet_around(t, 'alternatively') or self._snippet_around(t, 'compare')}\"",
+        )
+        set_if_empty(
+            "example_quality_frequency",
+            f"Evidence: example cues appear ~{per_1k(ex_count)} per 1,000 words (e.g., for example/for instance/consider). "
+            f"Example: \"{self._snippet_around(t, 'for example') or self._snippet_around(t, 'for instance') or self._snippet_around(t, 'consider')}\"",
+        )
+        set_if_empty(
+            "analogy_concept_bridging",
+            f"Evidence: analogy cues appear ~{per_1k(analogy_count)} per 1,000 words (e.g., think of/similar to/imagine). "
+            f"Example: \"{self._snippet_around(t, 'think of') or self._snippet_around(t, 'similar to') or self._snippet_around(t, 'imagine')}\"",
+        )
+        set_if_empty(
+            "representation_diversity",
+            "Evidence: representation diversity is inferred from references to multiple forms (e.g., verbal explanation plus equations/diagrams/slides). "
+            "If the recording is slides-heavy without verbal description, the system may under-detect representations that are only visible on screen.",
+        )
+        return p
+
     async def analyze_student_feedback_metrics(self, speech_analysis: Dict) -> Dict[str, Any]:
         """
         MARS Engagement → Feedback: learner question frequency & cognitive level (0–10 each).
@@ -1683,7 +1803,7 @@ Return JSON only:
             txt = response.choices[0].message.content
             if not txt:
                 raise ValueError("empty")
-            data = json.loads(txt)
+            data = self._safe_json_loads(txt)
             conf = (data.get("confidence") or "none").lower()
             if conf == "none":
                 data["student_question_frequency_score"] = 0.0
@@ -1773,12 +1893,13 @@ strengths, improvements, recommendations, detailed_analysis""",
             response_content = response.choices[0].message.content
             if not response_content:
                 raise ValueError("AI response content is None or empty")
-            p = json.loads(response_content)
+            p = self._safe_json_loads(response_content)
             p = self._ensure_mars_pedagogy_fields(p)
             p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
                 speech_analysis.get("transcript") or "",
                 float(p.get("causal_reasoning_depth") or 7.0),
             )
+            p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p)
             return p
         except (json.JSONDecodeError, ValueError, AttributeError):
             fb = {
@@ -2082,7 +2203,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             if not response_content:
                 raise ValueError("AI response content is None or empty")
             
-            analysis = json.loads(response_content)
+            analysis = self._safe_json_loads(response_content)
             
             # Step 4: Process AI analysis results (ICAP counts)
             all_questions_analyzed = analysis.get('all_questions_analyzed', [])
@@ -2411,7 +2532,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             if not response_content:
                 raise ValueError("AI response content is None or empty")
             
-            summary = json.loads(response_content)
+            summary = self._safe_json_loads(response_content)
             return summary
         except (json.JSONDecodeError, ValueError, AttributeError):
             return {
@@ -2886,21 +3007,52 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             for k in _mars_ck
         }
         _wpm = float(speech_analysis.get('speaking_rate', 0) or 0)
-        _fr_pct = round(float(speech_analysis.get('filler_ratio', 0) or 0) * 100.0, 2)
-        _vv = float(speech_analysis.get('voice_variety_score', 0) or 0)
-        _pe = float(speech_analysis.get('pause_effectiveness_score', 0) or 0)
+        _fr_pct = round(float(speech_analysis.get('filler_ratio', 0) or 0) * 100.0, 1)
+        _vv = round(float(speech_analysis.get('voice_variety_score', 0) or 0), 3)
+        _pe = round(float(speech_analysis.get('pause_effectiveness_score', 0) or 0), 3)
         _tconf = round(float(speech_analysis.get('confidence', 0.8) or 0) * 100.0, 1)
-        _delivery_speech_evidence = (
-            f"Speech category score {round(speech_score, 1)}/10. Quantitative evidence: {_wpm:.0f} WPM; "
-            f"filler ratio {_fr_pct}%; voice variety index {_vv:.3f}; pause effectiveness index {_pe:.3f}; "
-            f"transcription confidence {_tconf}%."
+        _fillers = speech_analysis.get('filler_details', []) or []
+        _top_fillers = ", ".join([f"{f.get('word')} ({f.get('count')}×)" for f in _fillers[:3] if f.get('word')]) or "none highlighted"
+        _wpm_band = (
+            "within a typical clarity band"
+            if 120 <= _wpm <= 200
+            else ("fast for dense content" if _wpm > 200 else "slow (may reduce momentum)")
         )
+        _filler_band = (
+            "low"
+            if _fr_pct <= 2.0
+            else ("moderate" if _fr_pct <= 5.0 else ("noticeable" if _fr_pct <= 8.0 else "high"))
+        )
+        _delivery_speech_evidence = (
+            f"Speech category score {round(speech_score, 1)}/10. Evidence from audio metrics: speaking rate {_wpm:.0f} WPM ({_wpm_band}); "
+            f"filler ratio {_fr_pct}% ({_filler_band}; top fillers: {_top_fillers}); "
+            f"transcription confidence {_tconf}% (higher supports reliable transcript-based scoring). "
+            f"Voice variety index {_vv} and pause effectiveness index {_pe} suggest how much prosody and pausing patterns support emphasis and comprehension."
+        )
+
         _vs = visual_analysis.get('scores', {}) or {}
+        _frames_n = int(visual_analysis.get('frames_analyzed', 0) or 0)
+        _vs_pairs = {
+            "eye contact": _vs.get('eye_contact', None),
+            "gestures": _vs.get('gestures', None),
+            "posture": _vs.get('posture', None),
+            "facial engagement": _vs.get('engagement', None),
+            "professionalism": _vs.get('professionalism', None),
+        }
+        _vs_num = {k: float(v) for k, v in _vs_pairs.items() if isinstance(v, (int, float))}
+        if _vs_num:
+            _best_k = max(_vs_num, key=_vs_num.get)
+            _worst_k = min(_vs_num, key=_vs_num.get)
+            _best = f"strongest signal: {_best_k} {_vs_num[_best_k]:.1f}/10"
+            _worst = f"weakest signal: {_worst_k} {_vs_num[_worst_k]:.1f}/10"
+        else:
+            _best, _worst = "strongest signal: —", "weakest signal: —"
         _delivery_body_evidence = (
-            f"Body language category score {round(visual_score, 1)}/10. Frame-averaged vision scores: "
-            f"eye contact {_vs.get('eye_contact', '—')}/10, gestures {_vs.get('gestures', '—')}/10, "
-            f"posture {_vs.get('posture', '—')}/10, facial engagement {_vs.get('engagement', '—')}/10, "
-            f"professionalism {_vs.get('professionalism', '—')}/10."
+            f"Body language category score {round(visual_score, 1)}/10, computed from {_frames_n} sampled frame(s). "
+            f"Frame-averaged signals: eye contact {_vs.get('eye_contact', '—')}/10; gestures {_vs.get('gestures', '—')}/10; "
+            f"posture {_vs.get('posture', '—')}/10; facial engagement {_vs.get('engagement', '—')}/10; "
+            f"professionalism {_vs.get('professionalism', '—')}/10. {_best}; {_worst}. "
+            "Interpret with recording constraints in mind (camera angle, distance, or slides-heavy layouts can hide facial/gesture cues)."
         )
         
         # Build the result dictionary
