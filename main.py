@@ -1063,7 +1063,8 @@ Return JSON only:
 - improvements: [{{"area": string, "description": string, "evidence": string}}, ...]"""
                 }
             ],
-            max_completion_tokens=2200
+            max_completion_tokens=2200,
+            response_format={"type": "json_object"},
             # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
         

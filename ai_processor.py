@@ -182,21 +182,12 @@ class VideoAnalysisProcessor:
             logger.info("🤝 Step 4.5: Analyzing interaction and questioning techniques...")
             await progress_callback(analysis_id, 90, "🤝 Step 4.5: Analyzing interaction and questioning techniques...")
             
-            interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
+            # Student/audience question detection first (needed for SUI confidence)
             sf_metrics = await self.analyze_student_feedback_metrics(speech_analysis)
+            speech_analysis["student_feedback_metrics"] = sf_metrics
+
+            interaction_analysis = await self.analyze_interaction_engagement(speech_analysis)
             interaction_analysis.update(sf_metrics)
-            # Revised SUI: uptake of learner responses (webcast-safe with disclaimer)
-            sui = self._compute_student_uptake_index(speech_analysis.get("transcript") or "", sf_metrics)
-            interaction_analysis["student_uptake_index"] = round(float(sui.get("score") or 0), 1)
-            interaction_analysis["student_uptake_index_evidence"] = sui.get("evidence", "")
-            interaction_analysis["student_uptake_index_pct"] = round(float(interaction_analysis["student_uptake_index"]) * 10.0, 1)
-            # Refresh the 20% interaction category aggregate after SUI override
-            _qd = float(interaction_analysis.get("interaction_frequency", 0) or 0)
-            _cli = float(interaction_analysis.get("question_quality", 0) or 0)
-            _qds = float(interaction_analysis.get("question_distribution_stability", 0) or 0)
-            _sui = float(interaction_analysis.get("student_uptake_index", 0) or 0)
-            interaction_analysis["score"] = round((_qd + _cli + _sui + _qds) / 4.0, 1)
-            interaction_analysis["overall_interaction_pct"] = round(interaction_analysis["score"] * 10.0, 1)
 
             logger.info(f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
             await progress_callback(analysis_id, 92, f"✅ Interaction analysis complete: {interaction_analysis['total_questions']} questions detected")
@@ -1972,32 +1963,109 @@ strengths, improvements, recommendations, detailed_analysis""",
             return self._ensure_mars_pedagogy_fields(fb)
         
 
-    def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> float:
+    def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> Dict[str, Any]:
         """
         Question Distribution Stability (QDS): how spread out questions are over the lecture.
-        Uses 10 time bins; score 0-10 from normalized entropy (uniform distribution = 10).
-        E.g. questions at 3min, 18min, 38min in a 50min lecture = good spread.
+
+        Revised (lenient) logic:
+        - Use the time gaps between questions (including start and end boundaries).
+        - If gaps are similar (not necessarily perfectly even), spread is good.
+
+        Let t_i be sorted question times normalised to [0,1]. Define gaps:
+          g0=t1-0, g1=t2-t1, ... , gn=1-tn
+        mean_gap = 1/(n+1)
+        cv = stdev(gaps)/mean(gaps)
+        score = clamp(10 - 4*cv, 0, 10)
         """
         import math
         if not questions or len(questions) < 2 or duration_seconds <= 0:
-            return 0.0
-        num_bins = 10
-        bin_counts = [0] * num_bins
-        for q in questions:
-            t = q.get('start_time') or 0
-            bin_idx = min(int(t / duration_seconds * num_bins), num_bins - 1)
-            bin_counts[bin_idx] += 1
-        total = sum(bin_counts)
-        if total == 0:
-            return 0.0
-        entropy = 0.0
-        for c in bin_counts:
-            if c > 0:
-                p = c / total
-                entropy -= p * math.log2(p)
-        max_entropy = math.log2(num_bins)
-        normalized = entropy / max_entropy if max_entropy > 0 else 0.0  # 0 to 1
-        return round(min(10.0, max(0.0, normalized * 10.0)), 1)
+            return {"score": 0.0, "n": int(len(questions) if questions else 0), "cv": None, "mean_gap_s": None}
+        times = sorted(float(q.get("start_time") or 0) for q in questions)
+        n = len(times)
+        if n < 2:
+            return {"score": 0.0, "n": n, "cv": None, "mean_gap_s": None}
+        tn = [max(0.0, min(1.0, t / float(duration_seconds))) for t in times]
+        gaps = []
+        prev = 0.0
+        for t in tn:
+            gaps.append(max(0.0, t - prev))
+            prev = t
+        gaps.append(max(0.0, 1.0 - prev))
+        mean = sum(gaps) / max(1, len(gaps))
+        if mean <= 1e-9:
+            return {"score": 0.0, "n": n, "cv": None, "mean_gap_s": None}
+        var = sum((g - mean) ** 2 for g in gaps) / max(1, len(gaps))
+        st = math.sqrt(var)
+        cv = st / mean
+        score = round(min(10.0, max(0.0, 10.0 - 4.0 * cv)), 1)
+        mean_gap_s = round(mean * float(duration_seconds), 1)
+        return {"score": score, "n": n, "cv": round(cv, 3), "mean_gap_s": mean_gap_s}
+
+    def _compute_student_uptake_index_from_questions(
+        self,
+        words_data: List[Dict[str, Any]],
+        questions: List[Dict[str, Any]],
+        sf_metrics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Student Uptake Index (SUI): does the instructor build on learner responses?
+
+        Revised logic:
+        - If webcast has no reliable learner voice (confidence none), return conservative 2/10 + limitation note.
+        - Otherwise, for each instructor question, inspect a short window AFTER the question (word indices) for
+          uptake cues such as \"to answer your question\" / \"good question\" / \"as you said\".
+        - Score = 2 + 8*(uptake_hits / total_questions), clamped 0-10.
+        """
+        conf = (sf_metrics.get("student_feedback_confidence") or "none").lower()
+        if conf == "none":
+            return {
+                "score": 2.0,
+                "uptake_hits": 0,
+                "uptake_rate": 0.0,
+                "evidence": (
+                    "Student voice may not be recorded or distinguishable in webcast lectures; "
+                    "uptake cannot be reliably determined from transcript alone. Scored conservatively (2/10)."
+                ),
+            }
+        cues = (
+            "good question",
+            "great question",
+            "to answer your question",
+            "answer your question",
+            "someone asked",
+            "as you said",
+            "as someone said",
+            "building on",
+            "following up on",
+            "to respond to",
+        )
+        total = int(len(questions) or 0)
+        if total <= 0:
+            return {"score": 0.0, "uptake_hits": 0, "uptake_rate": 0.0, "evidence": "No instructor questions to evaluate uptake around."}
+        hits = 0
+        samples = []
+        for q in questions[:120]:
+            end_idx = q.get("end_idx")
+            if end_idx is None:
+                continue
+            try:
+                end_i = int(end_idx)
+            except Exception:
+                continue
+            window = words_data[end_i : min(len(words_data), end_i + 65)]
+            tail = " ".join((w.get("word") or "") for w in window).strip().lower()
+            if not tail:
+                continue
+            if any(c in tail for c in cues):
+                hits += 1
+                if len(samples) < 2:
+                    samples.append(" / ".join([c for c in cues if c in tail][:2]))
+        rate = hits / float(total) if total else 0.0
+        score = round(min(10.0, max(0.0, 2.0 + 8.0 * rate)), 1)
+        ev = f"Detected uptake cues after {hits}/{total} instructor questions (rate {rate:.2f})."
+        if samples:
+            ev += f" Example cues: {', '.join(samples)}."
+        return {"score": score, "uptake_hits": hits, "uptake_rate": round(rate, 3), "evidence": ev}
     
     def _normalise_icap_label(self, raw: Optional[str]) -> Optional[str]:
         if not raw or not str(raw).strip():
@@ -2494,13 +2562,18 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 question_distribution_stability_pct = 0.0
                 overall_pct = 0.0
             else:
+                pct_passive = count_passive / total_questions
+                pct_active = count_active / total_questions
                 pct_constructive = count_constructive / total_questions
                 pct_interactive = count_interactive / total_questions
-                # CLI = Cognitive Level Index 0-100 -> question_quality 0-10
-                cli_raw = (2 * pct_constructive + 3 * pct_interactive) / 3.0
-                cli_100 = cli_raw * 100
-                question_quality = (cli_100 / 100.0) * 10.0  # 0-10
-                question_quality = round(min(10.0, max(0.0, question_quality)), 1)
+
+                # CLI (revised, straightforward): Interactive highest, Passive lowest
+                # User-facing weighting idea:
+                #   penalty = 0.40*Passive + 0.30*Active + 0.20*Constructive + 0.10*Interactive
+                #   CLI = (1 - penalty) * 10
+                penalty = 0.40 * pct_passive + 0.30 * pct_active + 0.20 * pct_constructive + 0.10 * pct_interactive
+                question_quality = round(min(10.0, max(0.0, (1.0 - penalty) * 10.0)), 1)
+                cli_100 = round(question_quality * 10.0, 1)
                 
                 # 1) Question density (QD): high 8-10, mid 4-7, low 1-3, no density (0-0.1) = 0
                 qd = total_questions / effective_minutes
@@ -2514,21 +2587,24 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     interaction_frequency = 8.0 + min(2.0, (qd - 1.5) * 2.0)  # 8 to 10 (e.g. 1.5->8, 2.5->10)
                 interaction_frequency = round(min(10.0, max(0.0, interaction_frequency)), 1)
                 
-                # 2) Student Uptake Index (SUI): Constructive+Interactive per minute -> 0-10
+                # 2) Student Uptake Index (SUI): uptake cues after questions -> 0-10
                 eqd = (count_constructive + count_interactive) / effective_minutes
                 eqd_per_minute = round(eqd, 3)
                 questions_per_minute = round(total_questions / effective_minutes, 3)
-                student_uptake_index = round(min(10.0, max(0.0, 3.0 + eqd * 2.5)), 1)
+                sf_metrics = self.analyze_student_feedback_metrics(speech_analysis) if False else None
+                # sf_metrics is already computed upstream and present in speech_analysis extras when available
+                sf_metrics = speech_analysis.get("student_feedback_metrics") or {}
+                sui = self._compute_student_uptake_index_from_questions(words_data, all_questions, sf_metrics)
+                student_uptake_index = float(sui.get("score") or 0.0)
                 
                 # 3) Question Distribution Stability (QDS): spread of questions over lecture -> 0-10
                 # Use timestamps from the detected question list (chronological) to avoid entropy collapse when text matching fails.
-                question_distribution_stability = self._compute_question_distribution_stability(
-                    final_all_questions, duration_seconds
-                )
+                qds = self._compute_question_distribution_stability(final_all_questions, duration_seconds)
+                question_distribution_stability = float(qds.get("score") or 0.0)
                 
-                if cli_100 >= 50:
+                if cli_100 >= 70:
                     cognitive_level = 'high'
-                elif cli_100 >= 25:
+                elif cli_100 >= 50:
                     cognitive_level = 'medium'
                 else:
                     cognitive_level = 'low'
@@ -2562,9 +2638,16 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'high_level_questions_count': high_level_questions_count,
                 'total_interactions': total_questions,
                 'icap_counts': {'passive': count_passive, 'active': count_active, 'constructive': count_constructive, 'interactive': count_interactive},
-                'cognitive_level_index': round((2 * count_constructive + 3 * count_interactive) / 3.0 / max(1, total_questions) * 100, 1) if total_questions else 0,
+                'cognitive_level_index': round(cli_100, 1) if total_questions else 0,
                 'eqd_per_minute': eqd_per_minute,
                 'questions_per_minute': questions_per_minute,
+                'cli_formula': "CLI = (1 - (0.40·Passive% + 0.30·Active% + 0.20·Constructive% + 0.10·Interactive%)) × 10",
+                'qds_formula': "QDS uses gap evenness: score = clamp(10 - 4·CV(gaps), 0, 10), where gaps include start/end boundaries.",
+                'qds_cv': qds.get("cv") if isinstance(qds, dict) else None,
+                'qds_mean_gap_seconds': qds.get("mean_gap_s") if isinstance(qds, dict) else None,
+                'sui_uptake_hits': sui.get("uptake_hits") if isinstance(sui, dict) else None,
+                'sui_uptake_rate': sui.get("uptake_rate") if isinstance(sui, dict) else None,
+                'sui_evidence': sui.get("evidence") if isinstance(sui, dict) else None,
             }
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
