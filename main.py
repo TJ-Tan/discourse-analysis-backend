@@ -11,9 +11,28 @@ import asyncio
 from datetime import datetime 
 from dotenv import load_dotenv
 import json
+import re
 
 # Load environment variables
 load_dotenv()
+
+
+def _safe_json_loads_llm(raw: str) -> dict:
+    """Extract JSON from LLM chat responses (code fences, leading text)."""
+    if raw is None:
+        raise ValueError("empty")
+    txt = str(raw).strip()
+    if not txt:
+        raise ValueError("empty")
+    if txt.startswith("```"):
+        txt = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", txt)
+        txt = re.sub(r"\s*```$", "", txt)
+        txt = txt.strip()
+    i = txt.find("{")
+    j = txt.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        txt = txt[i : j + 1]
+    return json.loads(txt)
 
 # Import enhanced AI processor and configuration
 try:
@@ -1053,7 +1072,7 @@ Return JSON only:
             if not summary_content:
                 raise ValueError("AI response content is None or empty")
             
-            summary = json.loads(summary_content)
+            summary = _safe_json_loads_llm(summary_content)
             
             # Ensure all required fields exist
             if 'personalized_feedback' not in summary:
@@ -1086,17 +1105,41 @@ Return JSON only:
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
-            # Fallback summary
+            # Fallback summary (readable narrative; no boilerplate "sample frames" line)
+            icap_fb = ""
+            if icap_counts:
+                icap_fb = (
+                    f" Question mix (ICAP): Passive {icap_counts.get('passive', 0)}, Active {icap_counts.get('active', 0)}, "
+                    f"Constructive {icap_counts.get('constructive', 0)}, Interactive {icap_counts.get('interactive', 0)}."
+                )
+            first_q = ""
+            qsrc = all_questions if all_questions else high_level_questions
+            if qsrc and len(qsrc) > 0:
+                qt = (qsrc[0].get("question") or qsrc[0].get("text") or "").strip()
+                ts = qsrc[0].get("precise_timestamp") or qsrc[0].get("timestamp") or ""
+                lab = qsrc[0].get("icap") or ""
+                if qt:
+                    first_q = f' One instructor question at {ts or "—"} ({lab}): "{qt[:220]}{"…" if len(qt) > 220 else ""}"'
+            ctx_bit = (lecture_context or "").strip()[:280]
+            ctx_sent = f" Context you provided: {ctx_bit}{'…' if len((lecture_context or '').strip()) > 280 else ''}" if ctx_bit else ""
             q_note = (
-                f"{total_questions} instructor question(s) detected; see report for wording and CLI."
+                f"About {total_questions} instructor question(s) were detected from the transcript.{icap_fb}{first_q}"
                 if total_questions > 0
-                else "No instructor questions were detected in the transcript; questioning-related scores rely on absence of '?'-terminated prompts."
+                else "No instructor questions ending with “?” were detected; engagement scores should be read in that light."
             )
+            extra_fb = ""
+            if extra_strengths:
+                extra_fb += " Strengths noted in the rubric: " + " ".join(extra_strengths[:4]) + "."
+            if extra_growth:
+                extra_fb += " Growth opportunities: " + " ".join(extra_growth[:4]) + "."
             fallback_summary = {
                 'personalized_feedback': (
-                    f"MARS Evaluated Final Score {overall_score}/10 — Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10. "
-                    f"{q_note} "
-                    f"Evidence: sample frames {sample_frames_count}; transcript excerpt available in the report."
+                    f"Your MARS Evaluated Final Score is {overall_score}/10, with Content at {content_score}/10, "
+                    f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. "
+                    f"The strongest block is {strongest_category[0]} ({strongest_category[1]}/10); "
+                    f"{weakest_categories[0][0]} is comparatively lower ({weakest_categories[0][1]}/10). "
+                    f"{q_note}{ctx_sent}{extra_fb} "
+                    f"This summary was assembled without the AI JSON parser; open the MARS sections below for full criteria and evidence."
                 ),
                 'strongest_strength': {
                     'title': strongest_category[0],

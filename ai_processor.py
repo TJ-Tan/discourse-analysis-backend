@@ -1999,6 +1999,147 @@ strengths, improvements, recommendations, detailed_analysis""",
         normalized = entropy / max_entropy if max_entropy > 0 else 0.0  # 0 to 1
         return round(min(10.0, max(0.0, normalized * 10.0)), 1)
     
+    def _normalise_icap_label(self, raw: Optional[str]) -> Optional[str]:
+        if not raw or not str(raw).strip():
+            return None
+        x = str(raw).strip().lower()
+        if x == "passive":
+            return "Passive"
+        if x == "active":
+            return "Active"
+        if x == "constructive":
+            return "Constructive"
+        if x == "interactive":
+            return "Interactive"
+        return None
+
+    def _classify_icap_heuristic(self, text: str) -> str:
+        """
+        Rule-based ICAP when the LLM over-uses Active or mismatches transcript wording.
+        Prefer Passive for tag questions and ultra-short non-interrogative ?-lines (ASR noise).
+        """
+        t = (text or "").strip()
+        if not t:
+            return "Passive"
+        low = t.lower()
+        words = re.findall(r"\b[\w']+\b", low)
+        interrogatives = (
+            "what", "when", "where", "who", "which", "why", "how", "whose", "whom",
+        )
+        has_int = any(w in interrogatives for w in words)
+
+        # Passive: rhetorical / check-ins / tag questions
+        passive_res = [
+            r"^(right|okay|ok|yes|no|see|clear|alright|hmm|uh)\s*\??$",
+            r"^(make sense|got it|you see|understand|everyone good|everyone okay)\b",
+            r"\b(isn'?t it|aren'?t they|isn'?t that|right|okay|ok)\s*\?$",
+            r"^any\s+questions?\b",
+            r"\bany questions?\s*(so far|left|remaining|before we)\b",
+            r"^(everyone|anybody|anyone)\s+(clear|good|with me)\b",
+        ]
+        for p in passive_res:
+            if re.search(p, low):
+                return "Passive"
+
+        if len(words) <= 4 and not has_int:
+            return "Passive"
+        if len(words) <= 8 and not has_int:
+            return "Passive"
+
+        # Interactive: dialogue / peer / audience-oriented
+        if re.search(
+            r"\b(you|your|y'all|we all|would you|could you|do you agree|discuss with|turn to|with a partner)\b",
+            low,
+        ):
+            if has_int or re.search(r"\b(why|how|what if|compare)\b", low):
+                return "Interactive"
+        if re.search(r"\b(what would you|how would you|what do you think|your view|opinion)\b", low):
+            return "Interactive"
+
+        # Constructive: reasoning / explanation prompts
+        if re.search(
+            r"\b(why|how come|explain|justify|what causes|what is the reason|evaluate|analyse|analyze|"
+            r"compare and contrast|what happens if|infer|implications)\b",
+            low,
+        ):
+            return "Constructive"
+
+        # Active: factual recall
+        if has_int or re.search(
+            r"\b(is|are|was|were|does|do|did|can|could|should|will|has|have)\b", low
+        ):
+            return "Active"
+
+        return "Passive"
+
+    def _merge_icap_labels(self, llm: Optional[str], heuristic: str) -> str:
+        """Combine LLM label with heuristic; reduce spurious Active and recover deeper types."""
+        h = heuristic or "Active"
+        if llm is None:
+            return h
+        # LLM often marks mumbling/tag lines as Active
+        if h == "Passive" and llm == "Active":
+            return "Passive"
+        # Real deeper questions the heuristic missed
+        if h == "Passive" and llm in ("Constructive", "Interactive"):
+            return llm
+        if llm == "Active" and h in ("Constructive", "Interactive"):
+            return h
+        if h == "Active" and llm in ("Constructive", "Interactive", "Passive"):
+            return llm
+        rank = {"Passive": 0, "Active": 1, "Constructive": 2, "Interactive": 3}
+        return llm if rank.get(llm, 1) >= rank.get(h, 1) else h
+
+    def _find_llm_icap_for_question(
+        self,
+        analyzed_list: List[Dict[str, Any]],
+        q_text: str,
+        index: int,
+    ) -> Optional[str]:
+        """Match LLM output to a detected question (exact key, fuzzy, or index fallback)."""
+        if not analyzed_list:
+            return None
+        key = self._normalise_question_key(q_text)
+        best_partial: Optional[str] = None
+        for aq in analyzed_list:
+            aq_text = (aq.get("question") or "").strip()
+            ak = self._normalise_question_key(aq_text)
+            if key and ak and key == ak:
+                return self._normalise_icap_label(aq.get("icap"))
+            if key and ak and len(key) >= 18 and (key in ak or ak in key):
+                best_partial = self._normalise_icap_label(aq.get("icap"))
+        if best_partial:
+            return best_partial
+        if index < len(analyzed_list):
+            return self._normalise_icap_label(analyzed_list[index].get("icap"))
+        return None
+
+    def _should_exclude_question_sentence(self, sentence: str) -> bool:
+        """
+        Drop likely false positives: very short non-interrogative ?-fragments and pure tag lines.
+        """
+        s = (sentence or "").strip()
+        if not s.endswith("?"):
+            return True
+        low = s.lower()
+        words = re.findall(r"\b[\w']+\b", low)
+        interrogatives = (
+            "what", "when", "where", "who", "which", "why", "how", "whose", "whom",
+        )
+        has_int = any(w in interrogatives for w in words)
+
+        if len(words) <= 2:
+            return True
+        if len(words) <= 4 and not has_int:
+            return True
+        # Standalone tag / filler questions
+        if re.match(
+            r"^(right|okay|ok|yes|no|see|clear|hmm|uh|really|sure)\s*\?$",
+            low,
+        ):
+            return True
+        return False
+
     def detect_questions_pattern_matching(self, words_data: List[Dict], transcript_text: str = "") -> List[Dict]:
         """
         Detect ALL questions from polished transcript.
@@ -2115,6 +2256,9 @@ strengths, improvements, recommendations, detailed_analysis""",
             # Remove punctuation for length check
             sentence_clean = re.sub(r'[^\w\s]', '', sentence)
             if len(sentence_clean.split()) < 3:
+                continue
+            
+            if self._should_exclude_question_sentence(sentence):
                 continue
             
             # Find the corresponding word timestamps for this sentence
@@ -2281,21 +2425,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'timestamp': self.format_timestamp(q['start_time'])
                 }
             
-            # Step 6: Build final question list with ICAP and timestamps
+            # Step 6: Build final question list from DETECTED questions (source of truth) + LLM + heuristic ICAP
             final_all_questions = []
             high_level_questions = []  # Constructive + Interactive for backward compatibility
             
-            for analyzed_q in all_questions_analyzed:
-                question_text = analyzed_q.get('question', '').strip()
-                icap_raw = (analyzed_q.get('icap') or 'Active').strip()
-                # Normalize to exactly one of Passive, Active, Constructive, Interactive
-                icap = 'Passive' if icap_raw.lower() == 'passive' else (
-                    'Active' if icap_raw.lower() == 'active' else (
-                        'Constructive' if icap_raw.lower() == 'constructive' else (
-                            'Interactive' if icap_raw.lower() == 'interactive' else 'Active'
-                        )
-                    )
-                )
+            for idx, q_row in enumerate(all_questions):
+                question_text = (q_row.get('question') or '').strip()
+                if not question_text:
+                    continue
+                icap_llm = self._find_llm_icap_for_question(all_questions_analyzed, question_text, idx)
+                icap_heuristic = self._classify_icap_heuristic(question_text)
+                icap = self._merge_icap_labels(icap_llm, icap_heuristic)
                 
                 question_text_clean = self._normalise_question_key(question_text)
                 timestamp_info = question_timestamp_map.get(question_text_clean)
@@ -2324,6 +2464,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             # Sort questions chronologically for UI readability and for QDS stability
             final_all_questions.sort(key=lambda x: float(x.get('start_time') or 0))
             high_level_questions.sort(key=lambda x: float(x.get('start_time') or 0))
+            
+            # Recount ICAP from merged labels (do not trust LLM aggregate counts)
+            total_questions = len(final_all_questions)
+            count_passive = sum(1 for x in final_all_questions if x['icap'] == 'Passive')
+            count_active = sum(1 for x in final_all_questions if x['icap'] == 'Active')
+            count_constructive = sum(1 for x in final_all_questions if x['icap'] == 'Constructive')
+            count_interactive = sum(1 for x in final_all_questions if x['icap'] == 'Interactive')
             
             high_level_questions_count = count_constructive + count_interactive
             
@@ -2423,15 +2570,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
             error_msg = str(e) if e else "Unknown error"
             logger.error(f"Error in interaction analysis: {error_msg}")
-            # Fallback: use pattern-matched questions with default ICAP Active
+            # Fallback: pattern-matched questions + heuristic ICAP (avoid all-Active)
             fallback_questions = []
             for q in all_questions:
+                qt = (q.get('question') or '').strip()
+                icap = self._classify_icap_heuristic(qt)
                 fallback_questions.append({
                     'question': q['question'],
                     'precise_timestamp': self.format_timestamp(q['start_time']),
                     'start_time': q['start_time'],
-                    'icap': 'Active',
-                    'is_high_level': False
+                    'icap': icap,
+                    'is_high_level': icap in ('Constructive', 'Interactive')
                 })
             total_questions = len(fallback_questions)
             if total_questions == 0:
@@ -2460,6 +2609,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 }
             dm_fb = max(0.1, speech_analysis.get('duration_minutes', 1))
             qpm_fb = round(total_questions / dm_fb, 3)
+            fb_high = [x for x in fallback_questions if x.get('is_high_level')]
             return {
                 'score': 5.0,
                 'interaction_frequency': 5.0,
@@ -2473,12 +2623,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'question_distribution_stability_pct': 0.0,
                 'overall_interaction_pct': 37.5,
                 'cognitive_level': 'medium',
-                'high_level_questions': [],
+                'high_level_questions': fb_high[:20],
                 'all_questions': fallback_questions,
                 'interaction_moments': [],
                 'total_questions': total_questions,
                 'total_interactions': total_questions,
-                'icap_counts': {'passive': 0, 'active': total_questions, 'constructive': 0, 'interactive': 0},
+                'icap_counts': {
+                    'passive': sum(1 for x in fallback_questions if x['icap'] == 'Passive'),
+                    'active': sum(1 for x in fallback_questions if x['icap'] == 'Active'),
+                    'constructive': sum(1 for x in fallback_questions if x['icap'] == 'Constructive'),
+                    'interactive': sum(1 for x in fallback_questions if x['icap'] == 'Interactive'),
+                },
                 'cognitive_level_index': 0,
                 'eqd_per_minute': 0.0,
                 'questions_per_minute': qpm_fb,
