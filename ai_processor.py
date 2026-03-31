@@ -2567,12 +2567,23 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 pct_constructive = count_constructive / total_questions
                 pct_interactive = count_interactive / total_questions
 
-                # CLI (revised, straightforward): Interactive highest, Passive lowest
-                # User-facing weighting idea:
-                #   penalty = 0.40*Passive + 0.30*Active + 0.20*Constructive + 0.10*Interactive
-                #   CLI = (1 - penalty) * 10
-                penalty = 0.40 * pct_passive + 0.30 * pct_active + 0.20 * pct_constructive + 0.10 * pct_interactive
-                question_quality = round(min(10.0, max(0.0, (1.0 - penalty) * 10.0)), 1)
+                # CLI (simple threshold rule; ICAP-based):
+                # - No questions: 0/10
+                # - 100% Passive: 3/10
+                # - If Interactive% >= 20%: 9/10
+                # - Else if Active% >= 20% OR Constructive% >= 20%: 7/10
+                # - Else (mixed but low shares of deeper/factual prompts): 5/10
+                if total_questions <= 0:
+                    question_quality = 0.0
+                elif count_passive == total_questions:
+                    question_quality = 3.0
+                elif pct_interactive >= 0.20:
+                    question_quality = 9.0
+                elif pct_active >= 0.20 or pct_constructive >= 0.20:
+                    question_quality = 7.0
+                else:
+                    question_quality = 5.0
+                question_quality = round(min(10.0, max(0.0, float(question_quality))), 1)
                 cli_100 = round(question_quality * 10.0, 1)
                 
                 # 1) Question density (QD): high 8-10, mid 4-7, low 1-3, no density (0-0.1) = 0
@@ -2602,9 +2613,9 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 qds = self._compute_question_distribution_stability(final_all_questions, duration_seconds)
                 question_distribution_stability = float(qds.get("score") or 0.0)
                 
-                if cli_100 >= 70:
+                if question_quality >= 8.5:
                     cognitive_level = 'high'
-                elif cli_100 >= 50:
+                elif question_quality >= 6.0:
                     cognitive_level = 'medium'
                 else:
                     cognitive_level = 'low'
@@ -2641,7 +2652,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'cognitive_level_index': round(cli_100, 1) if total_questions else 0,
                 'eqd_per_minute': eqd_per_minute,
                 'questions_per_minute': questions_per_minute,
-                'cli_formula': "CLI = (1 - (0.40·Passive% + 0.30·Active% + 0.20·Constructive% + 0.10·Interactive%)) × 10",
+                'cli_formula': (
+                    "CLI rule (ICAP): "
+                    "if no questions→0; if 100% Passive→3; "
+                    "else if Interactive%≥20%→9; "
+                    "else if Active%≥20% or Constructive%≥20%→7; "
+                    "else→5."
+                ),
                 'qds_formula': "QDS uses gap evenness: score = clamp(10 - 4·CV(gaps), 0, 10), where gaps include start/end boundaries.",
                 'qds_cv': qds.get("cv") if isinstance(qds, dict) else None,
                 'qds_mean_gap_seconds': qds.get("mean_gap_s") if isinstance(qds, dict) else None,
