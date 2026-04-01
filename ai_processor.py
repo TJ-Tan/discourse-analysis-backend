@@ -1882,7 +1882,11 @@ Return JSON only:
         MARS Content category: nine criteria (Revised Rubric) + legacy five-dimension scores for reports.
         """
         lc = (lecture_context or "").strip()
-        lc_block = f"\nInstructor-provided lecture context:\n{lc}\n" if lc else ""
+        lc_block = (
+            f"\n---\nINSTRUCTOR-PROVIDED LECTURE CONTEXT (authoritative for intended subject, course, level, and learning goals):\n{lc}\n---\n"
+            if lc
+            else "\n(No instructor lecture context was provided; you cannot judge topic alignment against stated course goals—score internal coherence only, and note the limitation in evidence where relevant.)\n"
+        )
 
         context = f"""
         COMPREHENSIVE LECTURE ANALYSIS DATA:
@@ -1904,13 +1908,19 @@ Return JSON only:
                     "role": "system",
                     "content": """You are an expert pedagogical analyst. Score the lecture transcript (1-10 each) for MARS Content rubric:
 
-A) Content Organisation: structural_sequencing, logical_consistency, closure_framing
-B) Explanation Quality: conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
-C) Use of Examples / Representation: example_quality_frequency, analogy_concept_bridging, representation_diversity
+A) Content Organisation (MARS 1.1): structural_sequencing, logical_consistency, closure_framing
+B) Explanation Quality (MARS 1.2): conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
+C) Use of Examples / Representation (MARS 1.3): example_quality_frequency, analogy_concept_bridging, representation_diversity
+
+CRITICAL — LECTURE CONTEXT AND TOPIC ALIGNMENT:
+- When the instructor has provided "INSTRUCTOR-PROVIDED LECTURE CONTEXT", treat it as the ground truth for what this session should be about (e.g. course name, subject, topic, level, ILOs).
+- For ALL nine criteria in A, B, and C above, you MUST evaluate whether the spoken content is appropriate and aligned with that context.
+- If the transcript is largely about a different discipline or topic than the context states (e.g. extensive coding or unrelated content in a Japanese language class), the lecture is NOT instructionally successful for that course: score the nine criteria LOW (typically 2–5) and explain the misalignment explicitly in each evidence_* string. Do not give high scores for "clear structure" of the wrong subject matter.
+- If context is missing, do not invent alignment; score based on internal coherence of the transcript and state in evidence that alignment to course goals could not be verified.
 
 Also provide legacy aggregate scores (1-10): content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness.
 
-For EACH of the nine MARS criteria above, add evidence_<criterion_key>: a string (3-5 sentences) explaining WHY that score. Each must cite at least one short verbatim phrase from the transcript when possible, and give an approximate time (e.g. "around 2:30") when you can infer it from the excerpt. If no clear quote exists, still reference concrete patterns (e.g. number of examples, presence of recap).
+For EACH of the nine MARS criteria above, add evidence_<criterion_key>: a string (3-5 sentences) explaining WHY that score. Each must cite at least one short verbatim phrase from the transcript when possible, and give an approximate time (e.g. "around 2:30") when you can infer it from the excerpt. If no clear quote exists, still reference concrete patterns (e.g. number of examples, presence of recap). When context is provided, evidence must mention whether content matches or violates that context.
 
 Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).""",
                 },

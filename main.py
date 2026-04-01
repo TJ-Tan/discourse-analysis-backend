@@ -1004,66 +1004,103 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
             "If total instructor questions is 0, do NOT claim the session 'demonstrated effective questioning' or similar; "
             "acknowledge the absence of detected questions and focus on other evidence (delivery, content signals)."
         )
-        
-        response = openai_client.chat.completions.create(
-            model="gpt-5-nano",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """You are an expert educational evaluator creating a MARS lecture analysis summary.
 
-1. personalised_feedback: one cohesive paragraph (120-180 words) that:
-   - States the MARS Evaluated Final Score and briefly interprets Content, Delivery, Engagement (use the numbers provided).
-   - Is evidence-led: cite transcript patterns, question counts, ICAP mix, speaking metrics, or sample frames — never vague praise.
-   - If instructor questions exist, quote or paraphrase at least one real question from the list with its rough time/CLI label when given.
-   - If NO instructor questions were detected (count 0), do not imply strong questioning; discuss other strengths/limitations honestly.
-   - Weave in any 'additional strengths' and 'growth opportunities' phrases supplied as natural sentences (do not label them as separate sections).
-   - Note that analysis is from webcast + algorithm + LLM and may not capture full classroom impact.
+        context_block = (lecture_context or "").strip()[:6000]
+        if not context_block.strip():
+            context_block = "(No lecture context was submitted; interpret scores from transcript and metrics only.)"
 
-2. strongest_strength: one item with title, description, evidence (evidence must cite a metric, quote, or count).
+        summary_system = """You are an expert in higher education pedagogy, instructional design, and lecture evaluation.
 
-3. improvements: 1-2 growth opportunities (NOT titled 'areas for improvement'); each needs area, description, evidence.
+Your task is to analyse a MARS (Multimodal AI Reflection System) report and generate a professional 3-paragraph summary for instructors.
 
-Use British English. Be specific and professional."""
-                },
-                {
-                    "role": "user",
-                    "content": f"""Generate the summary.
+IMPORTANT REQUIREMENTS:
+- Write in a professional, constructive, and academic tone.
+- Use clear, concise, and well-structured language.
+- Avoid sounding overly critical; reframe weaknesses as growth opportunities.
+- Do NOT copy raw metrics directly without interpretation (you may reference scores, but each must be woven into a sentence that explains what they imply for teaching and learning).
+- Use the instructor's LECTURE CONTEXT when provided to judge whether content and delivery fit the stated course/subject (e.g. off-topic instruction should be discussed carefully as a limitation of instructional alignment).
+- Focus on insight, not just description.
+- Each paragraph must be purposeful and non-repetitive.
+
+OUTPUT STRUCTURE (STRICTLY FOLLOW):
+
+1) Overall (Paragraph 1)
+- Provide a balanced, high-level summary of the lecture performance.
+- Reference key dimensions: Content, Delivery, Engagement.
+- Interpret scores meaningfully (e.g., “strong in X, but limited in Y impact”).
+- Comment on overall instructional effectiveness (not just metrics).
+
+2) Strengths (Paragraph 2)
+- Highlight 2–4 strongest areas based on the analysis.
+- Focus on:
+  • Content structure (organisation, scaffolding, clarity)
+  • Conceptual accuracy and reasoning depth
+  • Delivery quality (clarity, pacing, articulation, confidence)
+- Explain WHY these are strengths and how they support learning.
+
+3) Growth Opportunity (Paragraph 3)
+- Identify the weakest dimension (typically Engagement).
+- Reframe it professionally as an opportunity for enhancement.
+- Be specific but constructive:
+  • e.g., questioning strategy, interaction design, cognitive engagement
+- Suggest direction of improvement (not just problem statement).
+- Avoid negative or judgemental tone.
+
+WRITING STYLE GUIDELINES:
+- Use terms like: “demonstrates”, “effectively”, “opportunity to enhance”, “could further strengthen”
+- Avoid blunt phrases like: “poor”, “weak”, “bad”
+- Prefer: “limited evidence of…”, “opportunities exist to…”
+- Maintain logical flow across paragraphs
+
+OUTPUT FORMAT (JSON ONLY):
+Return a JSON object with exactly these keys:
+- paragraph_overall: string (paragraph 1 only, no heading)
+- paragraph_strengths: string (paragraph 2 only, no heading)
+- paragraph_growth: string (paragraph 3 only, no heading)
+
+Each value must be a single paragraph (no internal bullet points, no markdown headings)."""
+
+        summary_user = f"""MARS analysis input (use all of this; prioritise lecture context + transcript + question evidence):
 
 MARS Evaluated Final Score: {overall_score}/10
 Content: {content_score}/10 | Delivery: {delivery_score}/10 | Engagement: {engagement_score}/10
 
-Lecture Context & Supplementary Information (submitted by instructor; use to interpret whether pace/terminology/questioning style fits the context):
-{lecture_context[:2000]}
+LECTURE CONTEXT (instructor-provided; use for alignment with intended subject/course):
+{context_block}
 
-Legacy detail (reference): Speech {speech_score}/10, Body {body_language_score}/10, Interaction category {interaction_score}/10.
+Reference detail: Speech {speech_score}/10, Body language {body_language_score}/10, Interaction category score {interaction_score}/10.
 
 Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)
 Weaker MARS blocks: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
 
+Engagement / questioning signals:
 Total instructor questions detected: {total_questions}
 Questions per minute (instructor): {questions_per_minute}
-Constructive+Interactive per minute (for SUI): {eqd_per_minute}
+Constructive+Interactive per minute (reference): {eqd_per_minute}
 {icap_line}
 {questions_text}
 {audience_block}
 
 Transcript excerpt:
-{transcript_excerpt[:2000]}
+{transcript_excerpt[:2500]}
 
 Sample frames analysed: {sample_frames_count}
 {filler_text}
-{extra_merge}
+
+Rubrik phrases to weave naturally into paragraphs (not as a list):
+{extra_merge if extra_merge.strip() else '(none supplied)'}
 
 Rules: {zero_q_rule}
 
-Return JSON only:
-- personalized_feedback: string
-- strongest_strength: {{"title": string, "description": string, "evidence": string}}
-- improvements: [{{"area": string, "description": string, "evidence": string}}, ...]"""
-                }
+Now generate the JSON with paragraph_overall, paragraph_strengths, paragraph_growth."""
+
+        response = openai_client.chat.completions.create(
+            model="gpt-5-nano",
+            messages=[
+                {"role": "system", "content": summary_system},
+                {"role": "user", "content": summary_user},
             ],
-            max_completion_tokens=2200,
+            max_completion_tokens=2600,
             response_format={"type": "json_object"},
             # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
@@ -1074,35 +1111,29 @@ Return JSON only:
                 raise ValueError("AI response content is None or empty")
             
             summary = _safe_json_loads_llm(summary_content)
-            
-            # Ensure all required fields exist
-            if 'personalized_feedback' not in summary:
+
+            p1 = (summary.get("paragraph_overall") or summary.get("paragraph1") or "").strip()
+            p2 = (summary.get("paragraph_strengths") or summary.get("paragraph2") or "").strip()
+            p3 = (summary.get("paragraph_growth") or summary.get("paragraph3") or "").strip()
+            if p1 and p2 and p3:
+                summary["personalized_feedback"] = f"{p1}\n\n{p2}\n\n{p3}"
+            elif not (summary.get("personalized_feedback") or "").strip():
                 if total_questions == 0:
-                    summary['personalized_feedback'] = (
+                    summary["personalized_feedback"] = (
                         f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
                         f"No instructor questions were detected in the transcript; interpret engagement scores with caution. "
                         f"Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)."
                     )
                 else:
-                    summary['personalized_feedback'] = (
+                    summary["personalized_feedback"] = (
                         f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
                         f"The session included {total_questions} instructor question(s) (see rubric breakdown for wording and CLI)."
                     )
-            
-            if 'strongest_strength' not in summary:
-                summary['strongest_strength'] = {
-                    'title': strongest_category[0],
-                    'description': f'Stronger performance in {strongest_category[0].lower()} ({strongest_category[1]}/10 on this block).',
-                    'evidence': f'MARS block score {strongest_category[1]}/10 for {strongest_category[0]}; overall {overall_score}/10.'
-                }
-            
-            if 'improvements' not in summary or len(summary['improvements']) == 0:
-                summary['improvements'] = [{
-                    'area': weakest_categories[0][0],
-                    'description': f'Consider strengthening {weakest_categories[0][0].lower()} (currently {weakest_categories[0][1]}/10).',
-                    'evidence': f'MARS block score {weakest_categories[0][1]}/10 vs strongest block {strongest_category[1]}/10.'
-                }]
-            
+
+            # New summary format: three paragraphs only; omit legacy boxes in UI when present
+            summary["strongest_strength"] = None
+            summary["improvements"] = []
+
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
@@ -1133,32 +1164,27 @@ Return JSON only:
                 extra_fb += " Strengths noted in the rubric: " + " ".join(extra_strengths[:4]) + "."
             if extra_growth:
                 extra_fb += " Growth opportunities: " + " ".join(extra_growth[:4]) + "."
+            fb_p1 = (
+                f"The lecture shows an overall MARS score of {overall_score}/10, with Content at {content_score}/10, "
+                f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. "
+                f"This pattern suggests relatively stronger performance in {strongest_category[0].lower()} and comparatively "
+                f"more limited impact in {weakest_categories[0][0].lower()} for active learning in this recording. "
+                f"{q_note}{ctx_sent}{extra_fb}"
+            )
+            fb_p2 = (
+                f"A notable strength is {strongest_category[0].lower()} ({strongest_category[1]}/10), which supports clarity and learner comprehension "
+                f"when the spoken content aligns with the intended session goals."
+            )
+            fb_p3 = (
+                f"An opportunity to enhance practice lies in {weakest_categories[0][0].lower()} ({weakest_categories[0][1]}/10): "
+                f"consider strategies that increase sustained dialogue, purposeful questioning, and visible uptake of learner contributions, "
+                f"while noting that webcast audio may not capture full classroom interaction."
+            )
             fallback_summary = {
-                'personalized_feedback': (
-                    f"Your MARS Evaluated Final Score is {overall_score}/10, with Content at {content_score}/10, "
-                    f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. "
-                    f"The strongest block is {strongest_category[0]} ({strongest_category[1]}/10); "
-                    f"{weakest_categories[0][0]} is comparatively lower ({weakest_categories[0][1]}/10). "
-                    f"{q_note}{ctx_sent}{extra_fb} "
-                    f"This summary was assembled without the AI JSON parser; open the MARS sections below for full criteria and evidence."
-                ),
-                'strongest_strength': {
-                    'title': strongest_category[0],
-                    'description': f'Stronger MARS block: {strongest_category[0].lower()} ({strongest_category[1]}/10).',
-                    'evidence': f'MARS {strongest_category[0]} score {strongest_category[1]}/10.'
-                },
-                'improvements': [{
-                    'area': weakest_categories[0][0],
-                    'description': f'Growth opportunity in {weakest_categories[0][0].lower()} (score {weakest_categories[0][1]}/10).',
-                    'evidence': f'MARS block comparison: {weakest_categories[0][0]} {weakest_categories[0][1]}/10 vs {strongest_category[0]} {strongest_category[1]}/10.'
-                }]
+                "personalized_feedback": f"{fb_p1}\n\n{fb_p2}\n\n{fb_p3}",
+                "strongest_strength": None,
+                "improvements": [],
             }
-            if len(weakest_categories) > 1:
-                fallback_summary['improvements'].append({
-                    'area': weakest_categories[1][0],
-                    'description': f'Additionally, {weakest_categories[1][0].lower()} could be enhanced (score: {weakest_categories[1][1]}/10).',
-                    'evidence': f'Current score: {weakest_categories[1][1]}/10'
-                })
             
             return JSONResponse(content={'summary': fallback_summary})
             
