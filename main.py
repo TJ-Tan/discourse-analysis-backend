@@ -17,6 +17,52 @@ import re
 load_dotenv()
 
 
+def _backend_build_index() -> tuple:
+    """
+    Integer that should track GitHub `main` depth for the backend repo when possible.
+    Priority: BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION env (Railway) > git rev-list --count HEAD.
+    """
+    from pathlib import Path
+    import subprocess
+    for key in ("BACKEND_COMMIT_COUNT", "DEPLOYMENT_ITERATION"):
+        v = os.getenv(key)
+        if v is not None and str(v).strip().isdigit():
+            return int(str(v).strip()), "env", key
+    try:
+        cwd = str(Path(__file__).resolve().parent)
+        r = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            cwd=cwd,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip().isdigit():
+            return int(r.stdout.strip()), "git", None
+    except Exception:
+        pass
+    return None, "unknown", None
+
+
+def _backend_short_sha() -> Optional[str]:
+    from pathlib import Path
+    import subprocess
+    try:
+        cwd = str(Path(__file__).resolve().parent)
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=cwd,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _safe_json_loads_llm(raw: str) -> dict:
     """Extract JSON from LLM chat responses (code fences, leading text)."""
     if raw is None:
@@ -246,10 +292,16 @@ async def deployment_info():
     
     singapore_time = dt.astimezone(singapore_tz)
     
+    idx, src, env_key = _backend_build_index()
+    sha = _backend_short_sha()
     return {
         "deployment_time": singapore_time.isoformat(),
         "deployment_time_formatted": singapore_time.strftime("%d %B %Y, %H:%M:%S"),
-        "timezone": "Asia/Singapore"
+        "timezone": "Asia/Singapore",
+        "backend_build_index": idx,
+        "backend_build_source": src,
+        "backend_build_env_key": env_key,
+        "backend_commit_sha_short": sha,
     }
 
 @app.get("/health")
@@ -1009,74 +1061,18 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         if not context_block.strip():
             context_block = "(No lecture context was submitted; interpret scores from transcript and metrics only.)"
 
-        summary_system = """You are an expert in higher education pedagogy, instructional design, and lecture evaluation.
+        raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
-Your task is to analyse a MARS (Multimodal AI Reflection System) report and generate a professional 3-paragraph summary for instructors.
+Scores: Overall {overall_score}/10 | Content {content_score}/10 | Delivery {delivery_score}/10 | Engagement {engagement_score}/10
+Speech {speech_score}/10 | Body {body_language_score}/10 | Interaction block {interaction_score}/10
+Strongest block: {strongest_category[0]} ({strongest_category[1]}/10)
+Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
 
-IMPORTANT REQUIREMENTS:
-- Write in a professional, constructive, and academic tone.
-- Use clear, concise, and well-structured language.
-- Avoid sounding overly critical; reframe weaknesses as growth opportunities.
-- Do NOT copy raw metrics directly without interpretation (you may reference scores, but each must be woven into a sentence that explains what they imply for teaching and learning).
-- Use the instructor's LECTURE CONTEXT when provided to judge whether content and delivery fit the stated course/subject (e.g. off-topic instruction should be discussed carefully as a limitation of instructional alignment).
-- Focus on insight, not just description.
-- Each paragraph must be purposeful and non-repetitive.
-
-OUTPUT STRUCTURE (STRICTLY FOLLOW):
-
-1) Overall (Paragraph 1)
-- Provide a balanced, high-level summary of the lecture performance.
-- Reference key dimensions: Content, Delivery, Engagement.
-- Interpret scores meaningfully (e.g., “strong in X, but limited in Y impact”).
-- Comment on overall instructional effectiveness (not just metrics).
-
-2) Strengths (Paragraph 2)
-- Highlight 2–4 strongest areas based on the analysis.
-- Focus on:
-  • Content structure (organisation, scaffolding, clarity)
-  • Conceptual accuracy and reasoning depth
-  • Delivery quality (clarity, pacing, articulation, confidence)
-- Explain WHY these are strengths and how they support learning.
-
-3) Growth Opportunity (Paragraph 3)
-- Identify the weakest dimension (typically Engagement).
-- Reframe it professionally as an opportunity for enhancement.
-- Be specific but constructive:
-  • e.g., questioning strategy, interaction design, cognitive engagement
-- Suggest direction of improvement (not just problem statement).
-- Avoid negative or judgemental tone.
-
-WRITING STYLE GUIDELINES:
-- Use terms like: “demonstrates”, “effectively”, “opportunity to enhance”, “could further strengthen”
-- Avoid blunt phrases like: “poor”, “weak”, “bad”
-- Prefer: “limited evidence of…”, “opportunities exist to…”
-- Maintain logical flow across paragraphs
-
-OUTPUT FORMAT (JSON ONLY):
-Return a JSON object with exactly these keys:
-- paragraph_overall: string (paragraph 1 only, no heading)
-- paragraph_strengths: string (paragraph 2 only, no heading)
-- paragraph_growth: string (paragraph 3 only, no heading)
-
-Each value must be a single paragraph (no internal bullet points, no markdown headings)."""
-
-        summary_user = f"""MARS analysis input (use all of this; prioritise lecture context + transcript + question evidence):
-
-MARS Evaluated Final Score: {overall_score}/10
-Content: {content_score}/10 | Delivery: {delivery_score}/10 | Engagement: {engagement_score}/10
-
-LECTURE CONTEXT (instructor-provided; use for alignment with intended subject/course):
+LECTURE CONTEXT (for alignment; may be long):
 {context_block}
 
-Reference detail: Speech {speech_score}/10, Body language {body_language_score}/10, Interaction category score {interaction_score}/10.
-
-Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)
-Weaker MARS blocks: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
-
-Engagement / questioning signals:
-Total instructor questions detected: {total_questions}
-Questions per minute (instructor): {questions_per_minute}
-Constructive+Interactive per minute (reference): {eqd_per_minute}
+Questioning / engagement signals:
+Total instructor questions: {total_questions} | qpm: {questions_per_minute} | C+I per min (ref): {eqd_per_minute}
 {icap_line}
 {questions_text}
 {audience_block}
@@ -1084,25 +1080,89 @@ Constructive+Interactive per minute (reference): {eqd_per_minute}
 Transcript excerpt:
 {transcript_excerpt[:2500]}
 
-Sample frames analysed: {sample_frames_count}
-{filler_text}
+Frames sampled: {sample_frames_count} {filler_text}
 
-Rubrik phrases to weave naturally into paragraphs (not as a list):
-{extra_merge if extra_merge.strip() else '(none supplied)'}
+Rubric snippets (integrate meaning, do not paste as a list in final prose):
+{extra_merge if extra_merge.strip() else '(none)'}
 
-Rules: {zero_q_rule}
+Rules: {zero_q_rule}"""
 
-Now generate the JSON with paragraph_overall, paragraph_strengths, paragraph_growth."""
+        interpretation_system = """You are Layer 1 — Structured interpretation for MARS (no final instructor-facing essay).
+
+Convert raw metrics into concise, analytic JSON. Be factual. Do NOT write three polished paragraphs here.
+
+Return JSON only with keys:
+- score_snapshot: one sentence stating overall + content + delivery + engagement scores and what gap they suggest (e.g. content/delivery vs engagement).
+- performance_pattern: exactly 2 sentences on how blocks relate pedagogically.
+- questioning_synthesis: 2–3 sentences describing the instructor's questioning profile in educational language. Forbidden: "Passive: N, Active: N" style or any comma-separated ICAP tally. Describe predominance (e.g. many brief check-ins/recall prompts vs fewer reasoning or dialogue-eliciting prompts).
+- engagement_quality_hypothesis: 1–2 sentences linking question types to likely cognitive engagement (without sounding harsh).
+- uptake_and_recording_limits: 1 sentence on webcast/student-audio limits if relevant.
+- context_alignment: 1–2 sentences on whether spoken content fits stated lecture context; if context missing, say so.
+- strengths_from_rubric: one sentence weaving rubric strengths (no "Strengths noted:" label).
+- growth_from_rubric: one sentence weaving rubric growth items (no "Growth opportunities:" label).
+- optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
+
+        narrative_system = """You are Layer 2 — Narrative generator for higher-education instructor feedback.
+
+Input: JSON from Layer 1 (interpretation) only, plus a one-line score reminder. Write EXACTLY three paragraphs for the instructor report.
+
+Tone: professional, constructive, academic. Reframe limitations as opportunities. Avoid blunt negative words ("poor", "weak", "bad").
+
+STRICT PROHIBITIONS:
+- Do NOT paste ICAP counts as "Passive X, Active Y" or similar.
+- Do NOT paste the full lecture context block; at most one short clause if essential.
+- Do NOT paste rubric fragments as lists (e.g. "Strengths noted in the rubric: ...").
+- No headings, no bullets inside paragraphs, no markdown.
+
+STRUCTURE:
+Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and overall instructional effectiveness.
+Paragraph 2 (Strengths): 2–4 strengths — organisation/scaffolding, conceptual clarity and reasoning, delivery (clarity, pacing, articulation). Explain why they help learning.
+Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific, constructive directions (questioning strategy, dialogue, uptake, distribution of prompts).
+
+Return JSON only:
+{"paragraph_overall": "...", "paragraph_strengths": "...", "paragraph_growth": "..."}"""
+
+        interp_user = f"Layer 1 — interpret these facts:\n\n{raw_facts}"
+        interp_json: Optional[dict] = None
+        try:
+            ir = openai_client.chat.completions.create(
+                model="gpt-5-nano",
+                messages=[
+                    {"role": "system", "content": interpretation_system},
+                    {"role": "user", "content": interp_user},
+                ],
+                max_completion_tokens=1400,
+                response_format={"type": "json_object"},
+            )
+            ic = ir.choices[0].message.content
+            if ic:
+                interp_json = _safe_json_loads_llm(ic)
+        except Exception:
+            interp_json = None
+
+        interp_blob = (
+            json.dumps(interp_json, ensure_ascii=False)
+            if interp_json
+            else json.dumps(
+                {"note": "Layer 1 failed; use raw facts below.", "raw_facts_excerpt": raw_facts[:3500]},
+                ensure_ascii=False,
+            )
+        )
+        narrative_user = (
+            f"Layer 2 — score reminder: Overall {overall_score}/10, Content {content_score}/10, "
+            f"Delivery {delivery_score}/10, Engagement {engagement_score}/10.\n\n"
+            f"Layer 1 interpretation (use as sole evidence base for nuance; do not invent facts):\n{interp_blob}\n\n"
+            "Produce paragraph_overall, paragraph_strengths, paragraph_growth."
+        )
 
         response = openai_client.chat.completions.create(
             model="gpt-5-nano",
             messages=[
-                {"role": "system", "content": summary_system},
-                {"role": "user", "content": summary_user},
+                {"role": "system", "content": narrative_system},
+                {"role": "user", "content": narrative_user},
             ],
             max_completion_tokens=2600,
             response_format={"type": "json_object"},
-            # Note: GPT-5-nano only supports default temperature (1), cannot set custom values
         )
         
         try:
@@ -1137,33 +1197,23 @@ Now generate the JSON with paragraph_overall, paragraph_strengths, paragraph_gro
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
-            # Fallback summary (readable narrative; no boilerplate "sample frames" line)
-            icap_fb = ""
-            if icap_counts:
-                icap_fb = (
-                    f" Question mix (ICAP): Passive {icap_counts.get('passive', 0)}, Active {icap_counts.get('active', 0)}, "
-                    f"Constructive {icap_counts.get('constructive', 0)}, Interactive {icap_counts.get('interactive', 0)}."
-                )
-            first_q = ""
-            qsrc = all_questions if all_questions else high_level_questions
-            if qsrc and len(qsrc) > 0:
-                qt = (qsrc[0].get("question") or qsrc[0].get("text") or "").strip()
-                ts = qsrc[0].get("precise_timestamp") or qsrc[0].get("timestamp") or ""
-                lab = qsrc[0].get("icap") or ""
-                if qt:
-                    first_q = f' One instructor question at {ts or "—"} ({lab}): "{qt[:220]}{"…" if len(qt) > 220 else ""}"'
-            ctx_bit = (lecture_context or "").strip()[:280]
-            ctx_sent = f" Context you provided: {ctx_bit}{'…' if len((lecture_context or '').strip()) > 280 else ''}" if ctx_bit else ""
+            # Fallback summary — narrative style; avoid raw ICAP tables or context dumps
             q_note = (
-                f"About {total_questions} instructor question(s) were detected from the transcript.{icap_fb}{first_q}"
+                f"The recording includes a substantial number of instructor questions (~{total_questions}); "
+                f"the mix appears weighted toward lower-demand prompts rather than sustained dialogue, which is consistent with the Engagement score."
                 if total_questions > 0
-                else "No instructor questions ending with “?” were detected; engagement scores should be read in that light."
+                else "Few or no instructor questions ending with “?” were detected; engagement-related scores should be interpreted cautiously."
+            )
+            ctx_sent = (
+                " Stated lecture context was available and should be used to judge topical alignment."
+                if (lecture_context or "").strip()
+                else ""
             )
             extra_fb = ""
             if extra_strengths:
-                extra_fb += " Strengths noted in the rubric: " + " ".join(extra_strengths[:4]) + "."
+                extra_fb += " Rubric highlights include: " + " ".join(extra_strengths[:4]) + "."
             if extra_growth:
-                extra_fb += " Growth opportunities: " + " ".join(extra_growth[:4]) + "."
+                extra_fb += " Suggested development themes include: " + " ".join(extra_growth[:4]) + "."
             fb_p1 = (
                 f"The lecture shows an overall MARS score of {overall_score}/10, with Content at {content_score}/10, "
                 f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. "
