@@ -17,10 +17,69 @@ import re
 load_dotenv()
 
 
+def _github_commit_count_and_sha() -> tuple:
+    """
+    Public GitHub API: commit count on default branch (main) when per_page=1 pagination
+    exposes rel=\"last\" (total pages == total commits for shallow listing).
+    Works without a token for public repos (rate limit applies).
+    """
+    import time
+    import urllib.error
+    import urllib.request
+
+    if not hasattr(_github_commit_count_and_sha, "_cache"):
+        _github_commit_count_and_sha._cache = {"t": 0.0, "count": None, "sha": None, "ok": False}
+    c = _github_commit_count_and_sha._cache
+    if time.time() - c["t"] < 3600 and c["ok"] and c["count"] is not None:
+        return c["count"], c["sha"], "github"
+
+    owner = (os.getenv("GITHUB_REPO_OWNER") or "TJ-Tan").strip()
+    repo = (os.getenv("GITHUB_REPO_NAME") or "discourse-analysis-backend").strip()
+    token = (os.getenv("GITHUB_TOKEN") or "").strip()
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha=main&per_page=1"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "discourse-analyzer-deployment-info",
+            "Accept": "application/vnd.github+json",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            link = resp.getheader("Link") or ""
+            body = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(body) if body else []
+            sha = None
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                sha = (data[0].get("sha") or "")[:7] or None
+            last_page = None
+            for segment in (link or "").split(","):
+                if 'rel="last"' in segment:
+                    pm = re.search(r"[?&]page=(\d+)", segment)
+                    if pm:
+                        last_page = int(pm.group(1))
+                        break
+            if last_page is not None:
+                c.update({"t": time.time(), "count": last_page, "sha": sha, "ok": True})
+                return last_page, sha, "github"
+            if isinstance(data, list):
+                if len(data) == 0:
+                    c.update({"t": time.time(), "count": 0, "sha": None, "ok": True})
+                    return 0, None, "github"
+                if len(data) == 1 and "rel=\"next\"" not in link:
+                    c.update({"t": time.time(), "count": 1, "sha": sha, "ok": True})
+                    return 1, sha, "github"
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return None, None, None
+
+
 def _backend_build_index() -> tuple:
     """
-    Integer that should track GitHub `main` depth for the backend repo when possible.
-    Priority: BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION env (Railway) > git rev-list --count HEAD.
+    Release build index aligned with GitHub history when possible.
+    Priority: BACKEND_COMMIT_COUNT / DEPLOYMENT_ITERATION env > local git > GitHub API.
     """
     from pathlib import Path
     import subprocess
@@ -38,9 +97,15 @@ def _backend_build_index() -> tuple:
             cwd=cwd,
         )
         if r.returncode == 0 and (r.stdout or "").strip().isdigit():
-            return int(r.stdout.strip()), "git", None
+            n = int(r.stdout.strip())
+            # Shallow clones (e.g. depth=1 on Railway) report 1 — prefer GitHub if so
+            if n > 1:
+                return n, "git", None
     except Exception:
         pass
+    gc, _, gsrc = _github_commit_count_and_sha()
+    if gc is not None:
+        return gc, gsrc, None
     return None, "unknown", None
 
 
@@ -60,7 +125,44 @@ def _backend_short_sha() -> Optional[str]:
             return r.stdout.strip()
     except Exception:
         pass
+    _, sha, src = _github_commit_count_and_sha()
+    if src == "github" and sha:
+        return sha
     return None
+
+
+def _english_list_phrases(items: List[str]) -> str:
+    xs = [str(x).strip().rstrip(".") for x in (items or []) if x and str(x).strip()]
+    if not xs:
+        return ""
+    if len(xs) == 1:
+        return xs[0]
+    if len(xs) == 2:
+        return f"{xs[0]} and {xs[1]}"
+    return ", ".join(xs[:-1]) + f", and {xs[-1]}"
+
+
+def _questioning_blurb(total_questions: int) -> str:
+    n = int(total_questions or 0)
+    if n <= 0:
+        return (
+            "The automated scan detected few instructor questions ending with “?”; engagement-related scores should be "
+            "interpreted cautiously and alongside other signals in the rubric."
+        )
+    if n < 8:
+        return (
+            f"Questioning frequency appears modest for a full session ({n} instructor prompt(s) detected in this scan), "
+            f"which may limit opportunities for sustained dialogue unless other formats were used."
+        )
+    if n < 50:
+        return (
+            f"The instructor posed multiple questions across the recording ({n} prompts detected); "
+            f"the next step is to examine the balance of prompt types and the extent of learner uptake, not only volume."
+        )
+    return (
+        f"The transcript reflects very frequent instructor questioning ({n} prompts detected). "
+        f"The primary opportunity is typically to deepen dialogue and cognitive engagement rather than to add more prompts alone."
+    )
 
 
 def _safe_json_loads_llm(raw: str) -> dict:
@@ -1098,24 +1200,30 @@ Return JSON only with keys:
 - engagement_quality_hypothesis: 1–2 sentences linking question types to likely cognitive engagement (without sounding harsh).
 - uptake_and_recording_limits: 1 sentence on webcast/student-audio limits if relevant.
 - context_alignment: 1–2 sentences on whether spoken content fits stated lecture context; if context missing, say so.
-- strengths_from_rubric: one sentence weaving rubric strengths (no "Strengths noted:" label).
-- growth_from_rubric: one sentence weaving rubric growth items (no "Growth opportunities:" label).
+- strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
+- growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
 
-        narrative_system = """You are Layer 2 — Narrative generator for higher-education instructor feedback.
+        narrative_system = """You are Layer 2 — Narrative generator for higher-education instructor feedback (faculty-development style).
 
 Input: JSON from Layer 1 (interpretation) only, plus a one-line score reminder. Write EXACTLY three paragraphs for the instructor report.
 
-Tone: professional, constructive, academic. Reframe limitations as opportunities. Avoid blunt negative words ("poor", "weak", "bad").
+Voice: insightful, constructive, academically professional — like an experienced teaching consultant. Prefer synthesis over inventory.
+
+Tone: professional, warm, precise. Reframe limitations as opportunities. Avoid blunt negative words ("poor", "weak", "bad").
 
 STRICT PROHIBITIONS:
 - Do NOT paste ICAP counts as "Passive X, Active Y" or similar.
-- Do NOT paste the full lecture context block; at most one short clause if essential.
-- Do NOT paste rubric fragments as lists (e.g. "Strengths noted in the rubric: ...").
+- Do NOT use tilde approximations like "(~12)"; state numbers plainly if needed.
+- Do NOT paste the full lecture context block; at most one short clause on alignment.
+- Do NOT use labels such as "Rubric highlights include:" or "Suggested development themes include:" — integrate ideas into flowing sentences.
+- Do NOT paste rubric fragments as comma-less stacks (e.g. "Clear delivery Structured presentation").
 - No headings, no bullets inside paragraphs, no markdown.
 
+LENGTH: Paragraph 1 about 130–200 words; paragraphs 2–3 about 110–180 words each. Develop ideas; avoid repeating the same score triad in every sentence.
+
 STRUCTURE:
-Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and overall instructional effectiveness.
+Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and what that pattern implies for student learning in this session (not a data dump).
 Paragraph 2 (Strengths): 2–4 strengths — organisation/scaffolding, conceptual clarity and reasoning, delivery (clarity, pacing, articulation). Explain why they help learning.
 Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific, constructive directions (questioning strategy, dialogue, uptake, distribution of prompts).
 
@@ -1161,7 +1269,7 @@ Return JSON only:
                 {"role": "system", "content": narrative_system},
                 {"role": "user", "content": narrative_user},
             ],
-            max_completion_tokens=2600,
+            max_completion_tokens=3200,
             response_format={"type": "json_object"},
         )
         
@@ -1197,38 +1305,38 @@ Return JSON only:
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
-            # Fallback summary — narrative style; avoid raw ICAP tables or context dumps
-            q_note = (
-                f"The recording includes a substantial number of instructor questions (~{total_questions}); "
-                f"the mix appears weighted toward lower-demand prompts rather than sustained dialogue, which is consistent with the Engagement score."
-                if total_questions > 0
-                else "Few or no instructor questions ending with “?” were detected; engagement-related scores should be interpreted cautiously."
-            )
+            # Fallback summary — faculty-development tone; no rubric label dumps or ICAP tables
+            q_note = _questioning_blurb(total_questions)
             ctx_sent = (
-                " Stated lecture context was available and should be used to judge topical alignment."
+                " Where the instructor supplied lecture context, interpretation should explicitly consider whether spoken content aligns with stated course aims."
                 if (lecture_context or "").strip()
                 else ""
             )
-            extra_fb = ""
-            if extra_strengths:
-                extra_fb += " Rubric highlights include: " + " ".join(extra_strengths[:4]) + "."
-            if extra_growth:
-                extra_fb += " Suggested development themes include: " + " ".join(extra_growth[:4]) + "."
+            s_line = _english_list_phrases([str(x) for x in (extra_strengths or [])[:5] if x])
+            g_line = _english_list_phrases([str(x) for x in (extra_growth or [])[:5] if x])
+            rubric_extra = ""
+            if s_line and g_line:
+                rubric_extra = f" Qualitative rubric signals point to strengths such as {s_line.lower()}, while development priorities could include {g_line.lower()}."
+            elif s_line:
+                rubric_extra = f" Qualitative rubric signals highlight {s_line.lower()}."
+            elif g_line:
+                rubric_extra = f" Suggested development priorities include {g_line.lower()}."
             fb_p1 = (
-                f"The lecture shows an overall MARS score of {overall_score}/10, with Content at {content_score}/10, "
-                f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. "
-                f"This pattern suggests relatively stronger performance in {strongest_category[0].lower()} and comparatively "
-                f"more limited impact in {weakest_categories[0][0].lower()} for active learning in this recording. "
-                f"{q_note}{ctx_sent}{extra_fb}"
+                f"Overall, this session receives a MARS score of {overall_score}/10, with Content at {content_score}/10, "
+                f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. Taken together, the profile suggests "
+                f"relatively stronger performance in {strongest_category[0].lower()} and comparatively more room to strengthen "
+                f"{weakest_categories[0][0].lower()} if the goal is active, visible learning in the room or in follow-up tasks. "
+                f"{q_note}{ctx_sent}{rubric_extra}"
             )
             fb_p2 = (
-                f"A notable strength is {strongest_category[0].lower()} ({strongest_category[1]}/10), which supports clarity and learner comprehension "
-                f"when the spoken content aligns with the intended session goals."
+                f"A clear strength lies in {strongest_category[0].lower()} (about {strongest_category[1]}/10 on this block). "
+                f"When this dimension is strong, learners are more likely to follow the intellectual thread, make sense of key ideas, "
+                f"and stay oriented to the session’s purpose—especially when explanations are accurate and delivery remains intelligible."
             )
             fb_p3 = (
-                f"An opportunity to enhance practice lies in {weakest_categories[0][0].lower()} ({weakest_categories[0][1]}/10): "
-                f"consider strategies that increase sustained dialogue, purposeful questioning, and visible uptake of learner contributions, "
-                f"while noting that webcast audio may not capture full classroom interaction."
+                f"The most productive next step is to further strengthen {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10). "
+                f"That may include designing more opportunities for sustained dialogue, varied cognitive prompts, and facilitation moves that make "
+                f"learner thinking visible—recognising that webcast audio often under-represents audience contributions."
             )
             fallback_summary = {
                 "personalized_feedback": f"{fb_p1}\n\n{fb_p2}\n\n{fb_p3}",
