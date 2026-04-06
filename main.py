@@ -16,176 +16,21 @@ import re
 # Load environment variables
 load_dotenv()
 
-
-def _github_repo_candidates() -> List[tuple]:
-    """(owner, repo) pairs to try for GitHub API."""
-    out: List[tuple] = []
-    gr = (os.getenv("GITHUB_REPOSITORY") or "").strip()
-    if gr and "/" in gr:
-        a, b = gr.split("/", 1)
-        out.append((a.strip(), b.strip()))
-    for o, n in [
-        (os.getenv("GITHUB_REPO_OWNER") or "TJ-Tan", os.getenv("GITHUB_REPO_NAME") or "discourse-analysis-backend"),
-        ("TJ-Tan", "discourse-analysis-backend"),
-        ("tj-tan", "discourse-analysis-backend"),
-    ]:
-        t = (str(o).strip(), str(n).strip())
-        if t not in out:
-            out.append(t)
-    return out
-
-
-def _github_commit_total_graphql(owner: str, repo: str, token: str) -> Optional[int]:
-    """GraphQL: total commit count on default branch (accurate; needs token for private repos)."""
-    import urllib.error
-    import urllib.request
-
-    q = {
-        "query": """query($owner:String!, $name:String!) {
-          repository(owner:$owner, name:$name) {
-            defaultBranchRef {
-              target {
-                ... on Commit {
-                  history(first: 1) { totalCount }
-                }
-              }
-            }
-          }
-        }""",
-        "variables": {"owner": owner, "name": repo},
-    }
-    body = json.dumps(q).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.github.com/graphql",
-        data=body,
-        headers={
-            "User-Agent": "discourse-analyzer-deployment-info",
-            "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {token}"} if token else {}),
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
-            if data.get("errors"):
-                return None
-            tc = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("defaultBranchRef", {})
-                .get("target", {})
-                .get("history", {})
-                .get("totalCount")
-            )
-            if isinstance(tc, int) and tc >= 0:
-                return tc
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError, TypeError, KeyError):
-        pass
-    return None
-
-
-def _github_commit_count_and_sha() -> tuple:
-    """
-    GitHub: total commits via GraphQL (preferred) or REST pagination Link rel=last.
-    Private repos require GITHUB_TOKEN on the host. Anonymous REST is often 404 (private) or rate-limited.
-    """
-    import time
-    import urllib.error
-    import urllib.request
-
-    if not hasattr(_github_commit_count_and_sha, "_cache"):
-        _github_commit_count_and_sha._cache = {"t": 0.0, "count": None, "sha": None, "ok": False}
-    c = _github_commit_count_and_sha._cache
-    if time.time() - c["t"] < 3600 and c["ok"] and c["count"] is not None:
-        return c["count"], c["sha"], "github"
-
-    token = (os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
-
-    for owner, repo in _github_repo_candidates():
-        # 1) GraphQL totalCount (works for private when token set)
-        if token:
-            tc = _github_commit_total_graphql(owner, repo, token)
-            if tc is not None:
-                c.update({"t": time.time(), "count": tc, "sha": None, "ok": True})
-                return tc, None, "github"
-
-        # 2) REST: commits pagination — last page number when per_page=1
-        url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha=main&per_page=1"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "discourse-analyzer-deployment-info",
-                "Accept": "application/vnd.github+json",
-                **({"Authorization": f"Bearer {token}"} if token else {}),
-            },
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                link = resp.getheader("Link") or ""
-                body = resp.read().decode("utf-8", errors="replace")
-                data = json.loads(body) if body else []
-                sha = None
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    sha = (data[0].get("sha") or "")[:7] or None
-                last_page = None
-                for segment in (link or "").split(","):
-                    if 'rel="last"' in segment:
-                        pm = re.search(r"[?&]page=(\d+)", segment)
-                        if pm:
-                            last_page = int(pm.group(1))
-                            break
-                if last_page is not None:
-                    c.update({"t": time.time(), "count": last_page, "sha": sha, "ok": True})
-                    return last_page, sha, "github"
-                if isinstance(data, list):
-                    if len(data) == 0:
-                        continue
-                    if len(data) == 1 and "rel=\"next\"" not in link:
-                        c.update({"t": time.time(), "count": 1, "sha": sha, "ok": True})
-                        return 1, sha, "github"
-        except urllib.error.HTTPError:
-            continue
-        except (urllib.error.URLError, json.JSONDecodeError, ValueError, TypeError):
-            continue
-
-    return None, None, None
+# Manual release index for footer "Release build (API)". Bump when you ship a meaningful backend cut.
+# Override anytime with env BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION on the host.
+DEFAULT_BACKEND_RELEASE_BUILD = 148
 
 
 def _backend_build_index() -> tuple:
     """
-    Release build index aligned with GitHub history when possible.
-    Priority: BACKEND_COMMIT_COUNT / DEPLOYMENT_ITERATION env > GitHub API > local git (any n>=1).
+    Release build number for UI. Option B: manual default in code; env overrides for ad-hoc bumps.
+    Priority: BACKEND_COMMIT_COUNT / DEPLOYMENT_ITERATION > DEFAULT_BACKEND_RELEASE_BUILD.
     """
-    from pathlib import Path
-    import subprocess
     for key in ("BACKEND_COMMIT_COUNT", "DEPLOYMENT_ITERATION"):
         v = os.getenv(key)
         if v is not None and str(v).strip().isdigit():
             return int(str(v).strip()), "env", key
-
-    gc, _, gsrc = _github_commit_count_and_sha()
-    if gc is not None:
-        return gc, gsrc, None
-
-    try:
-        cwd = str(Path(__file__).resolve().parent)
-        r = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=4,
-            cwd=cwd,
-        )
-        if r.returncode == 0 and (r.stdout or "").strip().isdigit():
-            n = int(r.stdout.strip())
-            if n >= 1:
-                return n, "git", None
-    except Exception:
-        pass
-    return None, "unknown", None
+    return DEFAULT_BACKEND_RELEASE_BUILD, "manual", None
 
 
 def _backend_short_sha() -> Optional[str]:
@@ -208,9 +53,6 @@ def _backend_short_sha() -> Optional[str]:
             return r.stdout.strip()
     except Exception:
         pass
-    _, sha, src = _github_commit_count_and_sha()
-    if src == "github" and sha:
-        return sha
     return None
 
 
