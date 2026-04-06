@@ -17,11 +17,79 @@ import re
 load_dotenv()
 
 
+def _github_repo_candidates() -> List[tuple]:
+    """(owner, repo) pairs to try for GitHub API."""
+    out: List[tuple] = []
+    gr = (os.getenv("GITHUB_REPOSITORY") or "").strip()
+    if gr and "/" in gr:
+        a, b = gr.split("/", 1)
+        out.append((a.strip(), b.strip()))
+    for o, n in [
+        (os.getenv("GITHUB_REPO_OWNER") or "TJ-Tan", os.getenv("GITHUB_REPO_NAME") or "discourse-analysis-backend"),
+        ("TJ-Tan", "discourse-analysis-backend"),
+        ("tj-tan", "discourse-analysis-backend"),
+    ]:
+        t = (str(o).strip(), str(n).strip())
+        if t not in out:
+            out.append(t)
+    return out
+
+
+def _github_commit_total_graphql(owner: str, repo: str, token: str) -> Optional[int]:
+    """GraphQL: total commit count on default branch (accurate; needs token for private repos)."""
+    import urllib.error
+    import urllib.request
+
+    q = {
+        "query": """query($owner:String!, $name:String!) {
+          repository(owner:$owner, name:$name) {
+            defaultBranchRef {
+              target {
+                ... on Commit {
+                  history(first: 1) { totalCount }
+                }
+              }
+            }
+          }
+        }""",
+        "variables": {"owner": owner, "name": repo},
+    }
+    body = json.dumps(q).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.github.com/graphql",
+        data=body,
+        headers={
+            "User-Agent": "discourse-analyzer-deployment-info",
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw)
+            if data.get("errors"):
+                return None
+            tc = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("defaultBranchRef", {})
+                .get("target", {})
+                .get("history", {})
+                .get("totalCount")
+            )
+            if isinstance(tc, int) and tc >= 0:
+                return tc
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
 def _github_commit_count_and_sha() -> tuple:
     """
-    Public GitHub API: commit count on default branch (main) when per_page=1 pagination
-    exposes rel=\"last\" (total pages == total commits for shallow listing).
-    Works without a token for public repos (rate limit applies).
+    GitHub: total commits via GraphQL (preferred) or REST pagination Link rel=last.
+    Private repos require GITHUB_TOKEN on the host. Anonymous REST is often 404 (private) or rate-limited.
     """
     import time
     import urllib.error
@@ -33,53 +101,63 @@ def _github_commit_count_and_sha() -> tuple:
     if time.time() - c["t"] < 3600 and c["ok"] and c["count"] is not None:
         return c["count"], c["sha"], "github"
 
-    owner = (os.getenv("GITHUB_REPO_OWNER") or "TJ-Tan").strip()
-    repo = (os.getenv("GITHUB_REPO_NAME") or "discourse-analysis-backend").strip()
-    token = (os.getenv("GITHUB_TOKEN") or "").strip()
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha=main&per_page=1"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "discourse-analyzer-deployment-info",
-            "Accept": "application/vnd.github+json",
-            **({"Authorization": f"Bearer {token}"} if token else {}),
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            link = resp.getheader("Link") or ""
-            body = resp.read().decode("utf-8", errors="replace")
-            data = json.loads(body) if body else []
-            sha = None
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                sha = (data[0].get("sha") or "")[:7] or None
-            last_page = None
-            for segment in (link or "").split(","):
-                if 'rel="last"' in segment:
-                    pm = re.search(r"[?&]page=(\d+)", segment)
-                    if pm:
-                        last_page = int(pm.group(1))
-                        break
-            if last_page is not None:
-                c.update({"t": time.time(), "count": last_page, "sha": sha, "ok": True})
-                return last_page, sha, "github"
-            if isinstance(data, list):
-                if len(data) == 0:
-                    c.update({"t": time.time(), "count": 0, "sha": None, "ok": True})
-                    return 0, None, "github"
-                if len(data) == 1 and "rel=\"next\"" not in link:
-                    c.update({"t": time.time(), "count": 1, "sha": sha, "ok": True})
-                    return 1, sha, "github"
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError, TypeError):
-        pass
+    token = (os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or "").strip()
+
+    for owner, repo in _github_repo_candidates():
+        # 1) GraphQL totalCount (works for private when token set)
+        if token:
+            tc = _github_commit_total_graphql(owner, repo, token)
+            if tc is not None:
+                c.update({"t": time.time(), "count": tc, "sha": None, "ok": True})
+                return tc, None, "github"
+
+        # 2) REST: commits pagination — last page number when per_page=1
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits?sha=main&per_page=1"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "discourse-analyzer-deployment-info",
+                "Accept": "application/vnd.github+json",
+                **({"Authorization": f"Bearer {token}"} if token else {}),
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                link = resp.getheader("Link") or ""
+                body = resp.read().decode("utf-8", errors="replace")
+                data = json.loads(body) if body else []
+                sha = None
+                if isinstance(data, list) and data and isinstance(data[0], dict):
+                    sha = (data[0].get("sha") or "")[:7] or None
+                last_page = None
+                for segment in (link or "").split(","):
+                    if 'rel="last"' in segment:
+                        pm = re.search(r"[?&]page=(\d+)", segment)
+                        if pm:
+                            last_page = int(pm.group(1))
+                            break
+                if last_page is not None:
+                    c.update({"t": time.time(), "count": last_page, "sha": sha, "ok": True})
+                    return last_page, sha, "github"
+                if isinstance(data, list):
+                    if len(data) == 0:
+                        continue
+                    if len(data) == 1 and "rel=\"next\"" not in link:
+                        c.update({"t": time.time(), "count": 1, "sha": sha, "ok": True})
+                        return 1, sha, "github"
+        except urllib.error.HTTPError:
+            continue
+        except (urllib.error.URLError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+
     return None, None, None
 
 
 def _backend_build_index() -> tuple:
     """
     Release build index aligned with GitHub history when possible.
-    Priority: BACKEND_COMMIT_COUNT / DEPLOYMENT_ITERATION env > local git > GitHub API.
+    Priority: BACKEND_COMMIT_COUNT / DEPLOYMENT_ITERATION env > GitHub API > local git (any n>=1).
     """
     from pathlib import Path
     import subprocess
@@ -87,6 +165,11 @@ def _backend_build_index() -> tuple:
         v = os.getenv(key)
         if v is not None and str(v).strip().isdigit():
             return int(str(v).strip()), "env", key
+
+    gc, _, gsrc = _github_commit_count_and_sha()
+    if gc is not None:
+        return gc, gsrc, None
+
     try:
         cwd = str(Path(__file__).resolve().parent)
         r = subprocess.run(
@@ -98,20 +181,20 @@ def _backend_build_index() -> tuple:
         )
         if r.returncode == 0 and (r.stdout or "").strip().isdigit():
             n = int(r.stdout.strip())
-            # Shallow clones (e.g. depth=1 on Railway) report 1 — prefer GitHub if so
-            if n > 1:
+            if n >= 1:
                 return n, "git", None
     except Exception:
         pass
-    gc, _, gsrc = _github_commit_count_and_sha()
-    if gc is not None:
-        return gc, gsrc, None
     return None, "unknown", None
 
 
 def _backend_short_sha() -> Optional[str]:
     from pathlib import Path
     import subprocess
+    for env_key in ("RAILWAY_GIT_COMMIT_SHA", "GIT_COMMIT_SHA", "VERCEL_GIT_COMMIT_SHA", "GITHUB_SHA"):
+        v = (os.getenv(env_key) or "").strip()
+        if len(v) >= 7:
+            return v[:7]
     try:
         cwd = str(Path(__file__).resolve().parent)
         r = subprocess.run(
