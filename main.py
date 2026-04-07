@@ -90,6 +90,39 @@ def _questioning_blurb(total_questions: int) -> str:
     )
 
 
+def _summary_fallback_context_line(lecture_context: str, transcript_excerpt: str) -> str:
+    """Short alignment note when LLM summary fallback runs (no meta-instructions to the reader)."""
+    lc = (lecture_context or "").strip()
+    if not lc:
+        return (
+            " No instructor context was provided for this lecture (for example module, topic, or intended learning outcomes), "
+            "so stated-versus-delivered alignment cannot be assessed from the submission."
+        )
+    tex = (transcript_excerpt or "").lower()
+    words = set(re.findall(r"[a-z0-9]{4,}", lc.lower()))
+    junk = {
+        "this", "that", "with", "from", "have", "been", "will", "your", "lecture", "session", "course",
+        "students", "student", "learning", "module", "topic", "about", "into", "their", "what", "when",
+        "where", "which", "there", "these", "those",
+    }
+    words -= junk
+    hits = sum(1 for w in list(words)[:50] if w in tex)
+    if hits >= 2:
+        return (
+            " Against the instructor-supplied context, the transcript excerpt shows overlapping themes and terminology, "
+            "suggesting broadly aligned delivery within the sample reviewed (you should still confirm against the full session and official ILOs)."
+        )
+    if hits == 1:
+        return (
+            " Against the instructor-supplied context, overlap with the transcript excerpt is limited; "
+            "it is worth checking whether the full recording matches your stated module focus and outcomes."
+        )
+    return (
+        " Against the instructor-supplied context, keyword overlap with the transcript excerpt is weak; "
+        "verify whether spoken content matches your intended module, topic, and learning outcomes."
+    )
+
+
 def _safe_json_loads_llm(raw: str) -> dict:
     """Extract JSON from LLM chat responses (code fences, leading text)."""
     if raw is None:
@@ -1084,9 +1117,9 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
             "acknowledge the absence of detected questions and focus on other evidence (delivery, content signals)."
         )
 
-        context_block = (lecture_context or "").strip()[:6000]
-        if not context_block.strip():
-            context_block = "(No lecture context was submitted; interpret scores from transcript and metrics only.)"
+        lc_raw = (lecture_context or "").strip()
+        has_user_context = bool(lc_raw)
+        context_block = lc_raw[:6000] if has_user_context else ""
 
         raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
@@ -1095,8 +1128,8 @@ Speech {speech_score}/10 | Body {body_language_score}/10 | Interaction block {in
 Strongest block: {strongest_category[0]} ({strongest_category[1]}/10)
 Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
 
-LECTURE CONTEXT (for alignment; may be long):
-{context_block}
+LECTURE CONTEXT (instructor-supplied; use with transcript excerpt below):
+{f'---\\n{context_block}\\n---' if has_user_context else '---\\n(none submitted — no module/topic/ILOs text was provided for this recording)\\n---'}
 
 Questioning / engagement signals:
 Total instructor questions: {total_questions} | qpm: {questions_per_minute} | C+I per min (ref): {eqd_per_minute}
@@ -1124,7 +1157,10 @@ Return JSON only with keys:
 - questioning_synthesis: 2–3 sentences describing the instructor's questioning profile in educational language. Forbidden: "Passive: N, Active: N" style or any comma-separated ICAP tally. Describe predominance (e.g. many brief check-ins/recall prompts vs fewer reasoning or dialogue-eliciting prompts).
 - engagement_quality_hypothesis: 1–2 sentences linking question types to likely cognitive engagement (without sounding harsh).
 - uptake_and_recording_limits: 1 sentence on webcast/student-audio limits if relevant.
-- context_alignment: 1–2 sentences on whether spoken content fits stated lecture context; if context missing, say so.
+- context_alignment: REQUIRED substantive judgement (not meta-instructions to the reader).
+  • If lecture context was submitted: 1–2 sentences comparing that context (module, topic, ILOs, audience) to themes and terminology visible in the transcript excerpt. State whether delivery appears aligned, partially aligned, or off-focus/mixed, citing brief paraphrase or topic cues from the transcript (do not invent module codes).
+  • If NO context was submitted: exactly one clear sentence, e.g. that no lecture context was provided (module, intended learning outcomes, etc.), so stated-versus-delivered alignment cannot be evaluated from the inputs.
+  FORBIDDEN here: phrases like "interpretation should", "should explicitly consider", "reviewers should", or any instruction telling someone how to interpret — only state findings.
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
@@ -1140,7 +1176,9 @@ Tone: professional, warm, precise. Reframe limitations as opportunities. Avoid b
 STRICT PROHIBITIONS:
 - Do NOT paste ICAP counts as "Passive X, Active Y" or similar.
 - Do NOT use tilde approximations like "(~12)"; state numbers plainly if needed.
-- Do NOT paste the full lecture context block; at most one short clause on alignment.
+- Do NOT paste the full lecture context block verbatim; summarise alignment in your own words using Layer 1’s context_alignment finding.
+- FORBIDDEN anywhere: meta lines such as "Where the instructor supplied lecture context, interpretation should explicitly consider…" or "reviewers should consider whether…" — write as if reporting an observation to the instructor.
+- If no context was provided, say so plainly in paragraph 1 (one sentence), per Layer 1 — do not imply context existed.
 - Do NOT use labels such as "Rubric highlights include:" or "Suggested development themes include:" — integrate ideas into flowing sentences.
 - Do NOT paste rubric fragments as comma-less stacks (e.g. "Clear delivery Structured presentation").
 - No headings, no bullets inside paragraphs, no markdown.
@@ -1148,7 +1186,7 @@ STRICT PROHIBITIONS:
 LENGTH: Paragraph 1 about 130–200 words; paragraphs 2–3 about 110–180 words each. Develop ideas; avoid repeating the same score triad in every sentence.
 
 STRUCTURE:
-Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and what that pattern implies for student learning in this session (not a data dump).
+Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and what that pattern implies for student learning. Weave in the Layer 1 context_alignment finding as a concrete sentence (alignment verdict, or explicit note that no context was provided).
 Paragraph 2 (Strengths): 2–4 strengths — organisation/scaffolding, conceptual clarity and reasoning, delivery (clarity, pacing, articulation). Explain why they help learning.
 Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific, constructive directions (questioning strategy, dialogue, uptake, distribution of prompts).
 
@@ -1232,11 +1270,7 @@ Return JSON only:
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
             # Fallback summary — faculty-development tone; no rubric label dumps or ICAP tables
             q_note = _questioning_blurb(total_questions)
-            ctx_sent = (
-                " Where the instructor supplied lecture context, interpretation should explicitly consider whether spoken content aligns with stated course aims."
-                if (lecture_context or "").strip()
-                else ""
-            )
+            ctx_sent = _summary_fallback_context_line(lecture_context, transcript_excerpt or "")
             s_line = _english_list_phrases([str(x) for x in (extra_strengths or [])[:5] if x])
             g_line = _english_list_phrases([str(x) for x in (extra_growth or [])[:5] if x])
             rubric_extra = ""

@@ -7,7 +7,7 @@ import librosa
 import numpy as np
 from openai import OpenAI
 from openai import APIError, APIConnectionError, APITimeoutError, RateLimitError
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import base64
 import json
 import re
@@ -1809,9 +1809,10 @@ Return JSON only:
             data = self._safe_json_loads(txt)
             conf = (data.get("confidence") or "none").lower()
             if conf == "none":
-                # Webcast limitation: if no separate learner voice is detectable, avoid a misleading 0/10.
-                data["student_question_frequency_score"] = 2.0
-                data["student_question_cognitive_score"] = 2.0
+                # Webcast: no evidenced audience channel — use neutral 5/10 so MARS Engagement is not double-penalised
+                # (instructor prompting density already carries interaction signal).
+                data["student_question_frequency_score"] = 5.0
+                data["student_question_cognitive_score"] = 5.0
             sf = float(data.get("student_question_frequency_score", 0) or 0)
             sc = float(data.get("student_question_cognitive_score", 0) or 0)
             aq = data.get("audience_questions") or []
@@ -1822,7 +1823,7 @@ Return JSON only:
                 "student_question_cognitive_score": round(min(10.0, max(0.0, sc)), 1),
                 "student_feedback_confidence": conf,
                 "student_feedback_remarks": data.get("remarks", "") or (
-                    "Student voice may not be recorded clearly in webcast lectures; learner-question scores are therefore conservative (2/10)."
+                    "Student voice not evidenced in transcript; learner-question subscores set to neutral 5/10 (does not penalise engagement)."
                     if conf == "none" else ""
                 ),
                 "audience_questions": aq[:30],
@@ -1831,10 +1832,10 @@ Return JSON only:
         except Exception as e:
             logger.warning(f"Student feedback metrics fallback: {e}")
             return {
-                "student_question_frequency_score": 2.0,
-                "student_question_cognitive_score": 2.0,
+                "student_question_frequency_score": 5.0,
+                "student_question_cognitive_score": 5.0,
                 "student_feedback_confidence": "none",
-                "student_feedback_remarks": "Student voice may not be recorded clearly in webcast lectures; learner-question scores are therefore conservative (2/10).",
+                "student_feedback_remarks": "Student voice not evidenced; learner-question subscores default to neutral 5/10.",
                 "audience_questions": [],
                 "audience_question_count": 0,
             }
@@ -1975,41 +1976,42 @@ strengths, improvements, recommendations, detailed_analysis""",
 
     def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> Dict[str, Any]:
         """
-        Question Distribution Stability (QDS): how spread out questions are over the lecture.
-
-        Revised (lenient) logic:
-        - Use the time gaps between questions (including start and end boundaries).
-        - If gaps are similar (not necessarily perfectly even), spread is good.
-
-        Let t_i be sorted question times normalised to [0,1]. Define gaps:
-          g0=t1-0, g1=t2-t1, ... , gn=1-tn
-        mean_gap = 1/(n+1)
-        cv = stdev(gaps)/mean(gaps)
-        score = clamp(10 - 4*cv, 0, 10)
+        Question Distribution Stability (QDS): split lecture duration into 5 equal time quintiles
+        (0–20%, 20–40%, …). Each quintile that contains at least one question scores 2 points (max 10).
         """
-        import math
-        if not questions or len(questions) < 2 or duration_seconds <= 0:
-            return {"score": 0.0, "n": int(len(questions) if questions else 0), "cv": None, "mean_gap_s": None}
-        times = sorted(float(q.get("start_time") or 0) for q in questions)
-        n = len(times)
-        if n < 2:
-            return {"score": 0.0, "n": n, "cv": None, "mean_gap_s": None}
-        tn = [max(0.0, min(1.0, t / float(duration_seconds))) for t in times]
-        gaps = []
-        prev = 0.0
-        for t in tn:
-            gaps.append(max(0.0, t - prev))
-            prev = t
-        gaps.append(max(0.0, 1.0 - prev))
-        mean = sum(gaps) / max(1, len(gaps))
-        if mean <= 1e-9:
-            return {"score": 0.0, "n": n, "cv": None, "mean_gap_s": None}
-        var = sum((g - mean) ** 2 for g in gaps) / max(1, len(gaps))
-        st = math.sqrt(var)
-        cv = st / mean
-        score = round(min(10.0, max(0.0, 10.0 - 4.0 * cv)), 1)
-        mean_gap_s = round(mean * float(duration_seconds), 1)
-        return {"score": score, "n": n, "cv": round(cv, 3), "mean_gap_s": mean_gap_s}
+        nq = len(questions) if questions else 0
+        if nq <= 0 or duration_seconds <= 0:
+            return {
+                "score": 0.0,
+                "n": nq,
+                "cv": None,
+                "mean_gap_s": None,
+                "quintile_hits": [False] * 5,
+                "quintiles_filled": 0,
+            }
+        D = float(duration_seconds)
+        quintile_hits = [False] * 5
+        for q in questions:
+            t = float(q.get("start_time") or 0)
+            if t < 0:
+                t = 0.0
+            frac = t / D
+            if frac >= 1.0:
+                idx = 4
+            else:
+                idx = int(frac * 5)
+                idx = min(4, max(0, idx))
+            quintile_hits[idx] = True
+        k = sum(1 for h in quintile_hits if h)
+        score = round(min(10.0, max(0.0, 2.0 * k)), 1)
+        return {
+            "score": score,
+            "n": nq,
+            "cv": None,
+            "mean_gap_s": None,
+            "quintile_hits": quintile_hits,
+            "quintiles_filled": k,
+        }
 
     def _compute_student_uptake_index_from_questions(
         self,
@@ -2076,7 +2078,103 @@ strengths, improvements, recommendations, detailed_analysis""",
         if samples:
             ev += f" Example cues: {', '.join(samples)}."
         return {"score": score, "uptake_hits": hits, "uptake_rate": round(rate, 3), "evidence": ev}
-    
+
+    def _sui_from_prompting_density(
+        self,
+        duration_minutes: float,
+        total_questions: int,
+        count_active: int,
+        count_constructive: int,
+        count_interactive: int,
+    ) -> float:
+        """
+        Webcast-fair proxy for learner engagement opportunity: frequent Active / C / I prompts
+        create response slots even when audience audio is missing from the recording.
+        """
+        dm = max(0.1, float(duration_minutes))
+        qpm = total_questions / dm
+        eqd = (count_constructive + count_interactive) / dm
+        apd = count_active / dm
+        s = 3.0 + 2.35 * eqd + 0.88 * apd
+        if qpm >= 2.5:
+            s += 1.35
+        elif qpm >= 2.0:
+            s += 1.05
+        elif qpm >= 1.5:
+            s += 0.65
+        elif qpm >= 1.0:
+            s += 0.35
+        return round(min(10.0, max(0.0, s)), 1)
+
+    def _compute_question_quality_from_icap_counts(
+        self,
+        total_questions: int,
+        count_passive: int,
+        count_active: int,
+        count_constructive: int,
+        count_interactive: int,
+        _duration_minutes: float,
+    ) -> Tuple[float, float, str]:
+        """
+        CLI (3.2.1): primary driver is % of questions classified as Interactive.
+        >20% → 9/10; 10%–20% (inclusive) → 7/10; 5%–<10% → 5/10; below 5% → 3/10.
+        Small bump when Constructive share is high (does not override Interactive band).
+        """
+        if total_questions <= 0:
+            return 0.0, 0.0, "low"
+        tq = float(total_questions)
+        pi = count_interactive / tq
+        pc = count_constructive / tq
+
+        if pi > 0.20:
+            base = 9.0
+        elif pi >= 0.10:
+            base = 7.0
+        elif pi >= 0.05:
+            base = 5.0
+        else:
+            base = 3.0
+
+        if pc >= 0.25:
+            base = min(10.0, base + 0.5)
+        elif pc >= 0.15:
+            base = min(10.0, base + 0.25)
+
+        if count_passive == total_questions:
+            base = min(base, 4.0)
+
+        question_quality = round(min(10.0, max(1.0, base)), 1)
+        cli_100 = round(question_quality * 10.0, 1)
+        if question_quality >= 8.5:
+            cog = "high"
+        elif question_quality >= 6.0:
+            cog = "medium"
+        else:
+            cog = "low"
+        return question_quality, cli_100, cog
+
+    def _question_engagement_narrative(
+        self,
+        total_questions: int,
+        duration_minutes: float,
+        count_active: int,
+        count_interactive: int,
+        count_constructive: int,
+        high_level_count: int,
+    ) -> str:
+        dm = max(0.1, float(duration_minutes))
+        qpm = round(total_questions / dm, 2)
+        apm = round(count_active / dm, 2)
+        ipm = round(count_interactive / dm, 2)
+        cpm = round(count_constructive / dm, 2)
+        return (
+            f"Across about {dm:.1f} minutes, the scan found {total_questions} instructor questions "
+            f"({qpm}/min). By ICAP, {count_active} are Active (≈{apm}/min), {count_interactive} Interactive (≈{ipm}/min), "
+            f"{count_constructive} Constructive (≈{cpm}/min). "
+            f"{high_level_count} questions are Constructive or Interactive (higher-order prompts); "
+            "those contribute extra weight in the engagement-quality score."
+        )
+
     def _normalise_icap_label(self, raw: Optional[str]) -> Optional[str]:
         if not raw or not str(raw).strip():
             return None
@@ -2560,6 +2658,13 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             
             eqd_per_minute = 0.0
             questions_per_minute = 0.0
+            qds: Dict[str, Any] = {}
+            sui: Dict[str, Any] = {"score": 0.0, "uptake_hits": 0, "uptake_rate": 0.0, "evidence": ""}
+            sui_prompt = 0.0
+            sui_uptake_raw = 0.0
+            sui_evidence = ""
+            cli_100 = 0.0
+            question_engagement_narrative = ""
             if total_questions == 0:
                 interaction_frequency = 0.0
                 question_quality = 0.0
@@ -2572,30 +2677,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 question_distribution_stability_pct = 0.0
                 overall_pct = 0.0
             else:
-                pct_passive = count_passive / total_questions
-                pct_active = count_active / total_questions
-                pct_constructive = count_constructive / total_questions
-                pct_interactive = count_interactive / total_questions
+                question_quality, cli_100, cognitive_level = self._compute_question_quality_from_icap_counts(
+                    total_questions,
+                    count_passive,
+                    count_active,
+                    count_constructive,
+                    count_interactive,
+                    effective_minutes,
+                )
 
-                # CLI (simple threshold rule; ICAP-based):
-                # - No questions: 0/10
-                # - 100% Passive: 3/10
-                # - If Interactive% >= 20%: 9/10
-                # - Else if Active% >= 20% OR Constructive% >= 20%: 7/10
-                # - Else (mixed but low shares of deeper/factual prompts): 5/10
-                if total_questions <= 0:
-                    question_quality = 0.0
-                elif count_passive == total_questions:
-                    question_quality = 3.0
-                elif pct_interactive >= 0.20:
-                    question_quality = 9.0
-                elif pct_active >= 0.20 or pct_constructive >= 0.20:
-                    question_quality = 7.0
-                else:
-                    question_quality = 5.0
-                question_quality = round(min(10.0, max(0.0, float(question_quality))), 1)
-                cli_100 = round(question_quality * 10.0, 1)
-                
                 # 1) Question density (QD): high 8-10, mid 4-7, low 1-3, no density (0-0.1) = 0
                 qd = total_questions / effective_minutes
                 if qd <= 0.1:
@@ -2612,24 +2702,48 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 eqd = (count_constructive + count_interactive) / effective_minutes
                 eqd_per_minute = round(eqd, 3)
                 questions_per_minute = round(total_questions / effective_minutes, 3)
-                sf_metrics = self.analyze_student_feedback_metrics(speech_analysis) if False else None
-                # sf_metrics is already computed upstream and present in speech_analysis extras when available
                 sf_metrics = speech_analysis.get("student_feedback_metrics") or {}
                 sui = self._compute_student_uptake_index_from_questions(words_data, all_questions, sf_metrics)
-                student_uptake_index = float(sui.get("score") or 0.0)
+                sui_uptake_raw = float(sui.get("score") or 0.0)
+                sui_prompt = self._sui_from_prompting_density(
+                    effective_minutes,
+                    total_questions,
+                    count_active,
+                    count_constructive,
+                    count_interactive,
+                )
+                conf_fb = (sf_metrics.get("student_feedback_confidence") or "none").lower()
+                if conf_fb in ("none", "low"):
+                    student_uptake_index = round(max(sui_uptake_raw, sui_prompt), 1)
+                    sui_note = (
+                        f" Webcast-style audio: listener uptake is often invisible; SUI uses max(transcript uptake cues, "
+                        f"prompting-density proxy {sui_prompt}/10) so high questioning volume is not collapsed to ~2/10."
+                    )
+                elif conf_fb == "medium":
+                    student_uptake_index = round(
+                        max(sui_uptake_raw, 0.5 * sui_uptake_raw + 0.5 * sui_prompt),
+                        1,
+                    )
+                    sui_note = f" Blended uptake score with prompting-density proxy ({sui_prompt}/10)."
+                else:
+                    student_uptake_index = sui_uptake_raw
+                    sui_note = ""
+                sui_evidence = (sui.get("evidence") or "") + sui_note
                 
                 # 3) Question Distribution Stability (QDS): spread of questions over lecture -> 0-10
                 # Use timestamps from the detected question list (chronological) to avoid entropy collapse when text matching fails.
                 qds = self._compute_question_distribution_stability(final_all_questions, duration_seconds)
                 question_distribution_stability = float(qds.get("score") or 0.0)
-                
-                if question_quality >= 8.5:
-                    cognitive_level = 'high'
-                elif question_quality >= 6.0:
-                    cognitive_level = 'medium'
-                else:
-                    cognitive_level = 'low'
-            
+
+                question_engagement_narrative = self._question_engagement_narrative(
+                    total_questions,
+                    effective_minutes,
+                    count_active,
+                    count_interactive,
+                    count_constructive,
+                    high_level_questions_count,
+                )
+
             # Percentages (0-100) for each component (only recalc when we have questions)
             if total_questions > 0:
                 interaction_frequency_pct = round(interaction_frequency * 10.0, 1)
@@ -2663,18 +2777,23 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'eqd_per_minute': eqd_per_minute,
                 'questions_per_minute': questions_per_minute,
                 'cli_formula': (
-                    "CLI rule (ICAP): "
-                    "if no questions→0; if 100% Passive→3; "
-                    "else if Interactive%≥20%→9; "
-                    "else if Active%≥20% or Constructive%≥20%→7; "
-                    "else→5."
+                    "CLI (3.2.1): Interactive share of all questions — >20%→9/10; 10–20%→7/10; 5–<10%→5/10; <5%→3/10; "
+                    "small bump if Constructive share is high."
                 ),
-                'qds_formula': "QDS uses gap evenness: score = clamp(10 - 4·CV(gaps), 0, 10), where gaps include start/end boundaries.",
+                'qds_formula': (
+                    "QDS (3.2.3): Lecture duration split into 5 equal quintiles (0–20%, 20–40%, …); "
+                    "2 points per quintile with ≥1 question (max 10)."
+                ),
                 'qds_cv': qds.get("cv") if isinstance(qds, dict) else None,
                 'qds_mean_gap_seconds': qds.get("mean_gap_s") if isinstance(qds, dict) else None,
+                'qds_quintile_hits': qds.get("quintile_hits") if isinstance(qds, dict) else None,
+                'qds_quintiles_filled': qds.get("quintiles_filled") if isinstance(qds, dict) else None,
                 'sui_uptake_hits': sui.get("uptake_hits") if isinstance(sui, dict) else None,
                 'sui_uptake_rate': sui.get("uptake_rate") if isinstance(sui, dict) else None,
-                'sui_evidence': sui.get("evidence") if isinstance(sui, dict) else None,
+                'sui_uptake_raw': sui_uptake_raw if total_questions else None,
+                'sui_prompting_proxy': sui_prompt if total_questions else None,
+                'sui_evidence': sui_evidence if total_questions else (sui.get("evidence") if isinstance(sui, dict) else None),
+                'question_engagement_narrative': question_engagement_narrative,
             }
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
@@ -2716,37 +2835,88 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'cognitive_level_index': 0,
                     'eqd_per_minute': 0.0,
                     'questions_per_minute': 0.0,
+                    'qds_quintile_hits': [False] * 5,
+                    'qds_quintiles_filled': 0,
                 }
             dm_fb = max(0.1, speech_analysis.get('duration_minutes', 1))
+            ds_fb_sec = dm_fb * 60.0
             qpm_fb = round(total_questions / dm_fb, 3)
             fb_high = [x for x in fallback_questions if x.get('is_high_level')]
+            cp = sum(1 for x in fallback_questions if x['icap'] == 'Passive')
+            ca = sum(1 for x in fallback_questions if x['icap'] == 'Active')
+            cc = sum(1 for x in fallback_questions if x['icap'] == 'Constructive')
+            ci = sum(1 for x in fallback_questions if x['icap'] == 'Interactive')
+            qq_fb, cli100_fb, cog_fb = self._compute_question_quality_from_icap_counts(
+                total_questions, cp, ca, cc, ci, dm_fb
+            )
+            qd_fb = total_questions / dm_fb
+            if qd_fb <= 0.1:
+                ifreq_fb = 0.0
+            elif qd_fb < 0.5:
+                ifreq_fb = 1.0 + (qd_fb - 0.1) / 0.4 * 2.0
+            elif qd_fb < 1.5:
+                ifreq_fb = 4.0 + (qd_fb - 0.5) / 1.0 * 3.0
+            else:
+                ifreq_fb = 8.0 + min(2.0, (qd_fb - 1.5) * 2.0)
+            ifreq_fb = round(min(10.0, max(0.0, ifreq_fb)), 1)
+            eqd_fb = (cc + ci) / dm_fb
+            sf_fb = speech_analysis.get("student_feedback_metrics") or {}
+            sui0_fb = self._compute_student_uptake_index_from_questions(words_data, all_questions, sf_fb)
+            sui_raw_fb = float(sui0_fb.get("score") or 0.0)
+            sui_p_fb = self._sui_from_prompting_density(dm_fb, total_questions, ca, cc, ci)
+            conf_fbb = (sf_fb.get("student_feedback_confidence") or "none").lower()
+            if conf_fbb in ("none", "low"):
+                sui_fb = round(max(sui_raw_fb, sui_p_fb), 1)
+            elif conf_fbb == "medium":
+                sui_fb = round(max(sui_raw_fb, 0.5 * sui_raw_fb + 0.5 * sui_p_fb), 1)
+            else:
+                sui_fb = sui_raw_fb
+            qds_fb = self._compute_question_distribution_stability(fallback_questions, ds_fb_sec)
+            qds_sc_fb = float(qds_fb.get("score") or 0.0)
+            hl_fb = cc + ci
+            narr_fb = self._question_engagement_narrative(total_questions, dm_fb, ca, ci, cc, hl_fb)
+            score_fb = round((ifreq_fb + qq_fb + sui_fb + qds_sc_fb) / 4.0, 1)
+            oa_fb = score_fb * 10.0
             return {
-                'score': 5.0,
-                'interaction_frequency': 5.0,
-                'question_quality': 5.0,
-                'student_uptake_index': 5.0,
-                'student_engagement_opportunities': 5.0,
-                'question_distribution_stability': 0.0,
-                'interaction_frequency_pct': 50.0,
-                'question_quality_pct': 50.0,
-                'student_uptake_index_pct': 50.0,
-                'question_distribution_stability_pct': 0.0,
-                'overall_interaction_pct': 37.5,
-                'cognitive_level': 'medium',
+                'score': score_fb,
+                'interaction_frequency': ifreq_fb,
+                'question_quality': qq_fb,
+                'student_uptake_index': sui_fb,
+                'student_engagement_opportunities': sui_fb,
+                'question_distribution_stability': qds_sc_fb,
+                'interaction_frequency_pct': round(ifreq_fb * 10.0, 1),
+                'question_quality_pct': round(qq_fb * 10.0, 1),
+                'student_uptake_index_pct': round(sui_fb * 10.0, 1),
+                'question_distribution_stability_pct': round(qds_sc_fb * 10.0, 1),
+                'overall_interaction_pct': round(oa_fb, 1),
+                'cognitive_level': cog_fb,
                 'high_level_questions': fb_high[:20],
                 'all_questions': fallback_questions,
                 'interaction_moments': [],
                 'total_questions': total_questions,
+                'high_level_questions_count': hl_fb,
                 'total_interactions': total_questions,
-                'icap_counts': {
-                    'passive': sum(1 for x in fallback_questions if x['icap'] == 'Passive'),
-                    'active': sum(1 for x in fallback_questions if x['icap'] == 'Active'),
-                    'constructive': sum(1 for x in fallback_questions if x['icap'] == 'Constructive'),
-                    'interactive': sum(1 for x in fallback_questions if x['icap'] == 'Interactive'),
-                },
-                'cognitive_level_index': 0,
-                'eqd_per_minute': 0.0,
+                'icap_counts': {'passive': cp, 'active': ca, 'constructive': cc, 'interactive': ci},
+                'cognitive_level_index': round(cli100_fb, 1),
+                'eqd_per_minute': round(eqd_fb, 4),
                 'questions_per_minute': qpm_fb,
+                'cli_formula': (
+                    "CLI (question quality): continuous ICAP mix + higher-order count bonuses "
+                    "(fallback path: heuristic ICAP only)."
+                ),
+                'qds_formula': (
+                    "QDS: 5 lecture quintiles × 2 points each when that segment contains ≥1 question."
+                ),
+                'qds_cv': qds_fb.get("cv"),
+                'qds_mean_gap_seconds': qds_fb.get("mean_gap_s"),
+                'qds_quintile_hits': qds_fb.get("quintile_hits"),
+                'qds_quintiles_filled': qds_fb.get("quintiles_filled"),
+                'sui_uptake_hits': sui0_fb.get("uptake_hits"),
+                'sui_uptake_rate': sui0_fb.get("uptake_rate"),
+                'sui_uptake_raw': sui_raw_fb,
+                'sui_prompting_proxy': sui_p_fb,
+                'sui_evidence': (sui0_fb.get("evidence") or ""),
+                'question_engagement_narrative': narr_fb,
             }
         
     def extract_evidence_from_transcript(self, transcript: str) -> List[str]:
@@ -3584,6 +3754,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 'questions_per_minute': round(float(interaction_analysis.get('questions_per_minute', 0) or 0), 4),
                 'icap_counts': interaction_analysis.get('icap_counts', {}),
                 'cognitive_level_index': interaction_analysis.get('cognitive_level_index', 0),
+                'high_level_questions_count': interaction_analysis.get(
+                    'high_level_questions_count',
+                    len(interaction_analysis.get('high_level_questions') or []),
+                ),
+                'question_engagement_narrative': interaction_analysis.get('question_engagement_narrative', ''),
+                'sui_prompting_proxy': interaction_analysis.get('sui_prompting_proxy'),
+                'sui_uptake_raw': interaction_analysis.get('sui_uptake_raw'),
+                'qds_quintile_hits': interaction_analysis.get('qds_quintile_hits'),
+                'qds_quintiles_filled': interaction_analysis.get('qds_quintiles_filled'),
                 'interaction_moments': interaction_analysis.get('interaction_moments', []),
                 'feedback': [
                     f"Asked {interaction_analysis.get('total_questions', 0)} questions at {interaction_analysis.get('cognitive_level', 'medium')} cognitive level",
@@ -3595,7 +3774,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'question_frequency': self.get_rubric_explanation('question_frequency', interaction_analysis.get('interaction_frequency', 0), interaction_analysis.get('interaction_frequency', 0)),
                     'cognitive_level': self.get_rubric_explanation('cognitive_level', interaction_analysis.get('question_quality', 0), interaction_analysis.get('question_quality', 0)),
                     'interaction_opportunity': self.get_rubric_explanation('interaction_opportunity', interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0)), interaction_analysis.get('student_uptake_index', interaction_analysis.get('student_engagement_opportunities', 0))),
-                    'question_distribution_stability': self.get_rubric_explanation('question_distribution_stability', interaction_analysis.get('question_distribution_stability', 0), interaction_analysis.get('question_distribution_stability', 0))
+                    'question_distribution_stability': self.get_rubric_explanation('question_distribution_stability', interaction_analysis.get('question_distribution_stability', 0), interaction_analysis.get('question_distribution_stability', 0)),
                 }
             },
             
