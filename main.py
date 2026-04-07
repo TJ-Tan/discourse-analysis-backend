@@ -1128,15 +1128,27 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         has_user_context = bool(lc_raw)
         context_block = lc_raw[:6000] if has_user_context else ""
 
+        # Precompute strings with newlines — nested f-strings cannot use \\n inside {...} on Python < 3.12 (Railway).
+        weaker_tail = (
+            f", {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)"
+            if len(weakest_categories) > 1
+            else ""
+        )
+        lecture_context_wrapped = (
+            f"---\n{context_block}\n---"
+            if has_user_context
+            else "---\n(none submitted — no module/topic/ILOs text was provided for this recording)\n---"
+        )
+
         raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
 Scores: Overall {overall_score}/10 | Content {content_score}/10 | Delivery {delivery_score}/10 | Engagement {engagement_score}/10
 Speech {speech_score}/10 | Body {body_language_score}/10 | Interaction block {interaction_score}/10
 Strongest block: {strongest_category[0]} ({strongest_category[1]}/10)
-Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){f', {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)' if len(weakest_categories) > 1 else ''}
+Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){weaker_tail}
 
 LECTURE CONTEXT (instructor-supplied; use with transcript excerpt below):
-{f'---\\n{context_block}\\n---' if has_user_context else '---\\n(none submitted — no module/topic/ILOs text was provided for this recording)\\n---'}
+{lecture_context_wrapped}
 
 Questioning / engagement signals:
 Total instructor questions: {total_questions} | qpm: {questions_per_minute} | C+I per min (ref): {eqd_per_minute}
