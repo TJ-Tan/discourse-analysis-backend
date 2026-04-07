@@ -184,6 +184,12 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
+class PasskeyPayload(BaseModel):
+    """JSON body for POST /validate-passkey (explicit model so the body always parses)."""
+    passkey: str = ""
+
+
 # Create FastAPI app
 app = FastAPI(title="Enhanced Discourse Analysis API", version="3.0.0")
 
@@ -622,25 +628,26 @@ async def queue_list():
     return response
 
 @app.post("/validate-passkey")
-async def validate_passkey(request: Request, passkey_data: dict):
+async def validate_passkey(payload: PasskeyPayload):
     """
-    Validate the passkey before allowing video upload
+    Validate the passkey before allowing video upload.
+    Always returns HTTP 200 with JSON {valid: bool} so browsers/axios can read the body without
+    treating a wrong passcode as a transport error (401 previously caused generic "failed to verify").
     """
-    expected_passkey = os.getenv('MARS_PASSKEY', '')
-    
+    expected_passkey = (os.getenv("MARS_PASSKEY") or "").strip()
+    provided_passkey = (payload.passkey or "").strip()
+
     if not expected_passkey:
         # If no passkey is set, allow access (backward compatibility)
-        return JSONResponse(content={'valid': True, 'message': 'Passkey not configured'})
-    
-    provided_passkey = passkey_data.get('passkey', '')
-    
+        return JSONResponse(content={"valid": True, "message": "Passkey not configured"})
+
     if provided_passkey == expected_passkey:
-        return JSONResponse(content={'valid': True, 'message': 'Passkey validated'})
-    else:
-        return JSONResponse(
-            status_code=401,
-            content={'valid': False, 'message': 'Invalid passkey'}
-        )
+        return JSONResponse(content={"valid": True, "message": "Passkey validated"})
+
+    return JSONResponse(
+        status_code=200,
+        content={"valid": False, "message": "Invalid passkey"},
+    )
 
 @app.post("/upload-video")
 async def upload_video(
