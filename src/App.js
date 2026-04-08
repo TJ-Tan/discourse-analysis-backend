@@ -285,6 +285,24 @@ function App() {
               {/* Score Transparency Section */}
               <div className="score-transparency">
                 <h3>Score Calculation Breakdown</h3>
+                {analysisStatus?.upload_completed_at && analysisStatus?.completed_at && (
+                  <div style={{ marginTop: '8px', color: '#4b5563', fontSize: '14px' }}>
+                    <strong>Total Time Spent for AI Analysis:</strong>{' '}
+                    {(() => {
+                      try {
+                        const t0 = new Date(analysisStatus.upload_completed_at).getTime();
+                        const t1 = new Date(analysisStatus.completed_at).getTime();
+                        const s = Math.max(0, Math.round((t1 - t0) / 1000));
+                        const m = Math.floor(s / 60);
+                        const sec = s % 60;
+                        return `${m}m ${sec}s`;
+                      } catch {
+                        return '—';
+                      }
+                    })()}
+                    {' '} (from upload completion to results ready)
+                  </div>
+                )}
                 <div className="transparency-grid">
                   <div className="transparency-section">
                     <h4>Overall Score: {results.overall_score}/10</h4>

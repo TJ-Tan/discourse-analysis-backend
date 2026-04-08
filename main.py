@@ -18,7 +18,8 @@ load_dotenv()
 
 # Manual release index for footer "Release build (API)". Bump when you ship a meaningful backend cut.
 # Override anytime with env BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION on the host.
-DEFAULT_BACKEND_RELEASE_BUILD = 148
+# Fallback only; when git metadata is available we prefer auto-count.
+DEFAULT_BACKEND_RELEASE_BUILD = 151
 
 
 def _backend_build_index() -> tuple:
@@ -30,6 +31,22 @@ def _backend_build_index() -> tuple:
         v = os.getenv(key)
         if v is not None and str(v).strip().isdigit():
             return int(str(v).strip()), "env", key
+    # Auto-increment when repository metadata is available (typical in deployments that build from git).
+    try:
+        from pathlib import Path
+        import subprocess
+        cwd = str(Path(__file__).resolve().parent)
+        r = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=cwd,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip().isdigit():
+            return int(r.stdout.strip()), "git", "rev-list --count HEAD"
+    except Exception:
+        pass
     return DEFAULT_BACKEND_RELEASE_BUILD, "manual", None
 
 
@@ -767,6 +784,10 @@ async def upload_video(
         # Verify file was saved correctly
         if not file_path.exists():
             raise HTTPException(status_code=500, detail="Failed to save uploaded file")
+        
+        # Record the moment upload completed (start of analysis timing window)
+        analysis_results.setdefault(analysis_id, {})
+        analysis_results[analysis_id]["upload_completed_at"] = datetime.now().astimezone(singapore_tz).isoformat()
     except HTTPException:
         # Re-raise HTTP exceptions (including cancellation)
         raise
@@ -812,6 +833,7 @@ async def upload_video(
             "filename": file.filename,
             "file_size": file.size,
             "client_ip": client_ip,
+            "upload_completed_at": analysis_results.get(analysis_id, {}).get("upload_completed_at") or singapore_time.isoformat(),
             "queued_at": singapore_time.isoformat(),
             "estimated_wait_minutes": queue_status["estimated_wait_minutes"],
             "lecture_context": ctx_stored,
@@ -853,6 +875,7 @@ async def upload_video(
         "filename": file.filename,
         "file_size": file_path.stat().st_size if file_path.exists() else getattr(file, 'size', 0),
         "client_ip": client_ip,
+        "upload_completed_at": analysis_results.get(analysis_id, {}).get("upload_completed_at") or singapore_time.isoformat(),
         "lecture_context": ctx_stored,
         "analysis_config": {
             "max_frames": current_config.get("sampling_config", {}).get("max_frames_analyzed", 40),
@@ -1591,12 +1614,24 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
         
         # Update with final results
         if analysis_id in analysis_results:
+            completed_at = datetime.now().astimezone(singapore_tz).isoformat()
+            upload_completed_at = analysis_results[analysis_id].get("upload_completed_at")
+            duration_seconds = None
+            try:
+                if upload_completed_at:
+                    t0 = datetime.fromisoformat(str(upload_completed_at))
+                    t1 = datetime.fromisoformat(str(completed_at))
+                    duration_seconds = max(0, int((t1 - t0).total_seconds()))
+            except Exception:
+                duration_seconds = None
             analysis_results[analysis_id].update({
                 "status": "completed",
                 "progress": 100,
                 "message": "AI analysis completed successfully!",
                 "results": results,
-                "processing_time": "Real AI analysis complete"
+                "processing_time": "Real AI analysis complete",
+                "completed_at": completed_at,
+                "analysis_duration_seconds": duration_seconds,
             })
             # Export question list to Excel (ICAP: Interactive/Constructive/Active/Passive)
             try:
@@ -1677,6 +1712,9 @@ async def process_next_queued_job():
                 "message": "🚀 Starting analysis from queue",
                 "progress": 5
             })
+            # Ensure upload completion timestamp exists (analysis duration counts from upload completion)
+            if not analysis_results[analysis_id].get("upload_completed_at"):
+                analysis_results[analysis_id]["upload_completed_at"] = analysis_results[analysis_id].get("queued_at") or singapore_time.isoformat()
             
             # Use file path from queue
             file_path = Path(next_job.get("file_path", ""))
@@ -1732,6 +1770,8 @@ async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
             "progress": 100,
             "message": "Enhanced analysis completed successfully! (Mock mode)",
             "results": final_results,
+            "completed_at": datetime.now().astimezone(pytz.timezone('Asia/Singapore')).isoformat(),
+            "analysis_duration_seconds": None,
             "analysis_summary": {
                 "frames_analyzed": 40,
                 "transcript_length": 15000,

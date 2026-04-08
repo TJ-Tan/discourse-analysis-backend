@@ -1949,6 +1949,46 @@ strengths, improvements, recommendations, detailed_analysis""",
                 raise ValueError("AI response content is None or empty")
             p = self._safe_json_loads(response_content)
             p = self._ensure_mars_pedagogy_fields(p)
+            # Compute context ↔ transcript alignment explicitly so scoring can be deterministically penalised
+            # when the instructor-provided context does not match what is actually taught.
+            # (We cannot rely solely on the rubric prompt being followed in every case.)
+            p["lecture_context_provided"] = bool(lc)
+            if lc:
+                try:
+                    align_resp = openai_client.chat.completions.create(
+                        model="gpt-5-nano",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You judge topical alignment between instructor-provided lecture context and the transcript.\n"
+                                    "Return ONLY JSON with keys: alignment_score (number 0.0-1.0), verdict (one of: match, partial, mismatch), rationale (1-3 sentences).\n"
+                                    "alignment_score meaning: 1.0 = clearly the same topic/discipline; 0.0 = clearly different discipline/topic.\n"
+                                    "Be strict: if context says one discipline (e.g. political science) but transcript is mostly another (e.g. BIM / construction), verdict=mismatch and alignment_score <= 0.2."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"LECTURE CONTEXT:\n{lc}\n\n"
+                                    f"TRANSCRIPT EXCERPT:\n{(speech_analysis.get('transcript') or '')[:7000]}\n"
+                                ),
+                            },
+                        ],
+                        max_completion_tokens=300,
+                    )
+                    ac = (align_resp.choices[0].message.content or "").strip()
+                    aj = self._safe_json_loads(ac) if ac else {}
+                    try:
+                        p["context_alignment_score"] = float(aj.get("alignment_score"))
+                    except Exception:
+                        p["context_alignment_score"] = None
+                    p["context_alignment_verdict"] = aj.get("verdict")
+                    p["context_alignment_rationale"] = aj.get("rationale")
+                except Exception:
+                    p["context_alignment_score"] = None
+                    p["context_alignment_verdict"] = None
+                    p["context_alignment_rationale"] = None
             p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
                 speech_analysis.get("transcript") or "",
                 float(p.get("causal_reasoning_depth") or 7.0),

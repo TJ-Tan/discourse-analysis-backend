@@ -125,13 +125,29 @@ def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str,
     ) / ue["total"]
 
     w = MARS_CONFIG["content_subweights"]
-    content = (
+    content_before_penalty = (
         w["content_organisation"] * org
         + w["explanation_quality"] * expl
         + w["use_of_examples_representation"] * exmp
     )
+    content = content_before_penalty
+    # If instructor provided lecture context but the transcript appears to be about a different topic/discipline,
+    # apply a deterministic penalty so "well-structured wrong-subject content" cannot score highly.
+    penalty_points = 0.0
+    try:
+        context_provided = bool(pedagogical_analysis.get("lecture_context_provided"))
+        alignment = pedagogical_analysis.get("context_alignment_score", None)
+        alignment = float(alignment) if alignment is not None else None
+        if context_provided and alignment is not None and alignment <= 0.25:
+            penalty_points = 5.0
+    except Exception:
+        penalty_points = 0.0
+    if penalty_points:
+        content = max(0.0, float(content) - float(penalty_points))
     return {
         "content_category_score": content,
+        "content_category_score_before_penalty": content_before_penalty,
+        "content_context_misalignment_penalty_points": penalty_points,
         "content_organisation_score": org,
         "explanation_quality_score": expl,
         "use_of_examples_representation_score": exmp,
@@ -139,7 +155,8 @@ def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str,
             "Content = 0.30×Org + 0.40×Expl + 0.30×Ex; "
             "Org = (0.1×SS + 0.1×LC + 0.1×CF) / 0.3; "
             "Expl = (0.2×CA + 0.1×CR + 0.1×MP) / 0.4; "
-            "Ex = (0.1×Eq + 0.1×An + 0.1×Rd) / 0.3"
+            "Ex = (0.1×Eq + 0.1×An + 0.1×Rd) / 0.3; "
+            "If context provided and alignment≤0.25: Content = max(0, Content − 5)"
         ),
     }
 
