@@ -263,6 +263,11 @@ AUDIO_CHUNK_SIZE_MB = 20  # Safe chunk size under 25MB Whisper limit
 MAX_AUDIO_CHUNKS = 12  # Max chunks for 1-hour video (10min chunks)
 PROCESSING_TIMEOUT = 1800  # 30 minutes total processing timeout
 
+# End-to-end timing expectations (used for UX messaging and ETA estimation).
+# "Processing" excludes upload time and queue wait.
+TYPICAL_PROCESSING_MINUTES_RANGE = (10, 15)
+TYPICAL_PROCESSING_MINUTES_BASELINE = 12
+
 @app.get("/")
 async def root():
     return {
@@ -469,6 +474,18 @@ async def reset_configuration():
 async def upload_video_options():
     return {"message": "OK"}
 
+def get_analysis_timing_metadata():
+    """Shared metadata for frontend UX messaging."""
+    return {
+        "typical_processing_minutes_range": list(TYPICAL_PROCESSING_MINUTES_RANGE),
+        "typical_processing_minutes_baseline": TYPICAL_PROCESSING_MINUTES_BASELINE,
+        "processing_timeout_minutes": round(PROCESSING_TIMEOUT / 60),
+        "max_concurrent_jobs": MAX_CONCURRENT_JOBS,
+        "notes": {
+            "processing_excludes_upload_and_queue": True,
+        },
+    }
+
 def get_queue_status(current_user_ip: str = None):
     """
     Get current queue status and estimated wait time with concurrent user warnings
@@ -509,14 +526,14 @@ def get_queue_status(current_user_ip: str = None):
                 progress = result.get('progress', 0)
                 current_job_progress = progress
                 # Estimate remaining time based on progress
-                # Assume total processing time is 10-15 minutes for a typical video
-                estimated_total_minutes = 12
+                # Assume total processing time is ~10–15 minutes for a typical video
+                estimated_total_minutes = TYPICAL_PROCESSING_MINUTES_BASELINE
                 remaining_progress = 100 - progress
                 estimated_wait_minutes = (remaining_progress / 100) * estimated_total_minutes
                 break
     
-    # Add time for queued jobs (assume 12 minutes per job)
-    estimated_wait_minutes += queued_jobs * 12
+    # Add time for queued jobs (assume ~12 minutes per job)
+    estimated_wait_minutes += queued_jobs * TYPICAL_PROCESSING_MINUTES_BASELINE
     
     # Determine warning level (only if there are OTHER users, not the current user)
     warning_level = "none"
@@ -544,7 +561,8 @@ def get_queue_status(current_user_ip: str = None):
         "active_ips": active_ips,
         "queued_ips": queued_ips,
         "total_users": total_users,
-        "all_ips": all_ips
+        "all_ips": all_ips,
+        "analysis_timing": get_analysis_timing_metadata(),
     }
 
 @app.get("/queue-status")
@@ -804,7 +822,8 @@ async def upload_video(
             "status": "queued",
             "message": f"Video queued for processing. Estimated wait: {queue_status['estimated_wait_minutes']} minutes",
             "queue_position": len(job_queue),
-            "estimated_wait_minutes": queue_status["estimated_wait_minutes"]
+            "estimated_wait_minutes": queue_status["estimated_wait_minutes"],
+            "analysis_timing": get_analysis_timing_metadata(),
         }
         response = JSONResponse(content=response_data)
         response.headers["Access-Control-Allow-Origin"] = "*"
@@ -864,7 +883,8 @@ async def upload_video(
         "status": "processing",
         "message": "Video uploaded successfully. Enhanced AI analysis started.",
         "filename": file.filename,
-        "estimated_time": "4-7 minutes" if AI_AVAILABLE else "15 seconds (mock)",
+        "estimated_time": "10–15 minutes (typical, after upload)" if AI_AVAILABLE else "15 seconds (mock)",
+        "analysis_timing": get_analysis_timing_metadata(),
         "enhancement_features": [
             f"Analyzing up to {current_config.get('sampling_config', {}).get('max_frames_analyzed', 40)} video frames",
             "Full transcript processing",

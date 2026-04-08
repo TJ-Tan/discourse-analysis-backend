@@ -1768,7 +1768,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
     async def analyze_student_feedback_metrics(self, speech_analysis: Dict) -> Dict[str, Any]:
         """
         MARS Engagement → Feedback: learner question frequency & cognitive level (0–10 each).
-        Webcasts often lack audience audio — LLM estimates confidence; low/none → 0 + remarks.
+        Webcasts often lack audience audio — LLM estimates confidence; confidence `none` → neutral 5/10 each + remarks (avoids double-penalising with instructor-only recordings).
         """
         transcript = speech_analysis.get("transcript") or ""
         if len(transcript.strip()) < 80:

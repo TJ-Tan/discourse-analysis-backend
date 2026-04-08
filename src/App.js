@@ -13,6 +13,7 @@ function App() {
   const [results, setResults] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [analysisTiming] = useState({ typical_processing_minutes_range: [10, 15], processing_timeout_minutes: 30 });
 
   // Handle file drop
   const onDrop = useCallback((acceptedFiles) => {
@@ -171,6 +172,14 @@ function App() {
                     )}
                     {isUploading ? 'Uploading...' : 'Start Analysis'}
                   </button>
+                </div>
+
+                <div className="mt-3 text-sm text-gray-500">
+                  Typical processing time (after upload):{' '}
+                  <span className="font-medium">
+                    {analysisTiming.typical_processing_minutes_range[0]}–{analysisTiming.typical_processing_minutes_range[1]} minutes
+                  </span>{' '}
+                  (timeout cap: {analysisTiming.processing_timeout_minutes} minutes).
                 </div>
               </div>
             )}

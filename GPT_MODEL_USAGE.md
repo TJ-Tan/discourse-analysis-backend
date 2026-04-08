@@ -104,6 +104,13 @@ This document lists all locations where GPT-5-nano (previously GPT-4o-mini) is u
 
 ---
 
+## How long the analysis takes (upload → finished)
+
+- **Typical end-to-end processing time (after upload completes):** ~**10–15 minutes** for a typical video (this is the baseline used for queue/ETA estimation in `backend/main.py`).
+- **Hard cap / timeout:** **30 minutes** total processing timeout (`PROCESSING_TIMEOUT = 1800` seconds).
+- **Upload time:** depends on file size and network speed; large files will add additional time before processing starts.
+- **Queueing:** the backend processes **1 job at a time** (`MAX_CONCURRENT_JOBS = 1`), so total time may increase if other analyses are ahead in the queue.
+
 ## Summary
 
 **Total GPT-5-nano Usage:** 6 locations

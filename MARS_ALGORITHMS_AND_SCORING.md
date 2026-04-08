@@ -138,18 +138,18 @@ Engagement = 0.40 × QD + 0.40 × QQ + 0.20 × (Learner_freq + Learner_cognitive
 
 | Symbol | Name | Computation (summary) |
 |--------|------|------------------------|
-| **QD** | Question density | Instructor questions per minute → piecewise 0–10 (bands: ≤0.1 → 0; low/mid/high). |
-| **CLI** | Cognitive Level Index | From ICAP: `(2×%Constructive + 3×%Interactive)/3` → scaled to 0–10 as `question_quality`. |
-| **SUI** | Student Uptake Index | `(Constructive+Interactive)/minute` → `3 + 2.5×EQD`, capped 0–10. |
-| **QDS** | Question Distribution Stability | Ten time bins; normalized entropy × 10; 0 if &lt;2 questions. |
-| **Learner** | Student question frequency & cognitive | LLM estimates; if `confidence == none`, both **0** (typical webcast). |
+| **QD** | Question density | `qd` = instructor questions ÷ minutes. Piecewise 0–10: `qd≤0.1→0`; `0.1<qd<0.5→1–3` linear; `0.5≤qd<1.5→4–7` linear; `qd≥1.5→8–10` (capped). |
+| **CLI** | Cognitive Level Index (`question_quality`) | Primary driver: **Interactive** share π of all instructor questions: `π>20%→9`; `10%≤π≤20%→7`; `5%≤π<10%→5`; `π<5%→3`. Small bump if **Constructive** share is high; if **all Passive**, cap at 4. Final 1–10. |
+| **SUI** | Student Uptake Index | Base: scan ~65 words after each question for uptake cues → `2 + 8×(hits/total_questions)`. If learner-voice confidence is **none/low**: `max(base, prompting_proxy)` (proxy from C+I/min, A/min, qpm). If **medium**: `max(base, 0.5×base + 0.5×proxy)`. If **high**: base only. |
+| **QDS** | Question Distribution Stability | Lecture duration split into **five equal quintiles**; **2 points** per quintile with ≥1 question (max **10**). Uses question `start_time`s. |
+| **Learner** | Student question frequency & cognitive | LLM on transcript; each 0–10. If `confidence == none`, both default to **neutral 5/10** (not 0) so Engagement is not double-penalised on instructor-only webcasts; remarks explain limitation. |
 
-**Code:** `analyze_interaction_engagement()`, `_compute_question_distribution_stability()`, `analyze_student_feedback_metrics()`, `compute_mars_engagement_category_score()`.
+**Code:** `analyze_interaction_engagement()`, `_compute_question_distribution_stability()`, `_compute_question_quality_from_icap_counts()`, `_compute_student_uptake_index_from_questions()`, `_sui_from_prompting_density()`, `analyze_student_feedback_metrics()`, `compute_mars_engagement_category_score()`.
 
 ### 5.4 User caveats
 
-- **Instructor questions** use the polished transcript and `?` detection + ICAP classification.
-- **Student questions** are **inferred**; without multi-speaker audio, scores are often **0** with an explanatory remark.
+- **Instructor questions** use the polished transcript and `?` detection + ICAP classification (LLM + heuristic merge).
+- **Student questions** are **inferred** from text; without a clear audience channel, confidence is often **none** and learner subscores are **neutral 5/10** with an explanatory remark.
 
 ---
 
