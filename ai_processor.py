@@ -1972,9 +1972,11 @@ CRITICAL — LECTURE CONTEXT AND TOPIC ALIGNMENT:
 
 Also provide legacy aggregate scores (1-10): content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness.
 
-For EACH of the nine MARS criteria above, add evidence_<criterion_key>: a string (3-5 sentences) explaining WHY that score. Each must cite at least one short verbatim phrase from the transcript when possible, and give an approximate time (e.g. "around 2:30") when you can infer it from the excerpt. If no clear quote exists, still reference concrete patterns (e.g. number of examples, presence of recap). When context is provided, evidence must mention whether content matches or violates that context.
-
-Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).
+Return a COMPACT JSON only response. Do NOT include long essays or multi-paragraph fields.
+- strengths: 3 short bullet-like strings
+- improvements: 3 short bullet-like strings
+- recommendations: 3 short bullet-like strings
+- alignment_comment: 1-2 sentences noting whether transcript matches the instructor-provided context (or that context is missing).
 
 You must output JSON only (one object) so it can be parsed programmatically."""
 
@@ -1984,11 +1986,8 @@ Return a single JSON object with ALL keys:
 structural_sequencing, logical_consistency, closure_framing,
 conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation,
 example_quality_frequency, analogy_concept_bridging, representation_diversity,
-evidence_structural_sequencing, evidence_logical_consistency, evidence_closure_framing,
-evidence_conceptual_accuracy, evidence_causal_reasoning_depth, evidence_multi_perspective_explanation,
-evidence_example_quality_frequency, evidence_analogy_concept_bridging, evidence_representation_diversity,
 content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
-strengths, improvements, recommendations, detailed_analysis"""
+strengths, improvements, recommendations, alignment_comment"""
 
         p: Optional[Dict[str, Any]] = None
         last_err: Optional[Exception] = None
@@ -2005,7 +2004,7 @@ strengths, improvements, recommendations, detailed_analysis"""
                         {"role": "system", "content": system_pedagogy},
                         {"role": "user", "content": user_pedagogy + suffix},
                     ],
-                    max_completion_tokens=4500,
+                    max_completion_tokens=1800,
                     prefer_json_object_format=(attempt == 0),
                 )
                 if not response or not getattr(response, "choices", None):
@@ -2023,19 +2022,18 @@ strengths, improvements, recommendations, detailed_analysis"""
         if p is None:
             logger.error("Pedagogy analysis using template fallback after JSON failures: %s", last_err)
             fb = {
-                "content_organization": 7.5,
-                "engagement_techniques": 7.0,
-                "communication_clarity": 7.8,
-                "use_of_examples": 7.2,
-                "knowledge_checking": 6.8,
-                "overall_effectiveness": 7.3,
-                "strengths": ["(System could not parse the model response; re-run analysis.)"],
-                "improvements": ["If this persists, contact support with your analysis time."],
-                "recommendations": ["Retry upload when the service is less busy."],
-                "detailed_analysis": (
-                    "The pedagogical model did not return usable JSON, so these scores are provisional placeholders only. "
-                    "This is not an evaluation of your teaching. Please run the analysis again."
-                ),
+                # Neutral placeholders; do not surface parse errors as "strengths" in the user report.
+                "content_organization": 5.0,
+                "engagement_techniques": 5.0,
+                "communication_clarity": 5.0,
+                "use_of_examples": 5.0,
+                "knowledge_checking": 5.0,
+                "overall_effectiveness": 5.0,
+                "strengths": [],
+                "improvements": [],
+                "recommendations": [],
+                "alignment_comment": "Pedagogical content scoring is temporarily unavailable (response could not be parsed). Please re-run analysis.",
+                "pedagogy_parse_failed": True,
             }
             fb = self._ensure_mars_pedagogy_fields(fb)
             fb["lecture_context_provided"] = bool(lc)
@@ -2043,6 +2041,7 @@ strengths, improvements, recommendations, detailed_analysis"""
 
         p = self._ensure_mars_pedagogy_fields(p)
         p["lecture_context_provided"] = bool(lc)
+        p["pedagogy_parse_failed"] = False
         if lc:
             try:
                 align_resp = self._chat_json_completion(
@@ -3932,8 +3931,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             },
             
             # Strengths and Improvements
-            'strengths': pedagogical_analysis.get('strengths', [])[:6],
-            'improvement_suggestions': pedagogical_analysis.get('improvements', [])[:6],
+            # Avoid leaking internal parse-failure placeholder strings into end-user reports.
+            'strengths': [
+                s for s in (pedagogical_analysis.get('strengths', []) or [])
+                if isinstance(s, str) and "could not parse" not in s.lower()
+            ][:6],
+            'improvement_suggestions': [
+                s for s in (pedagogical_analysis.get('improvements', []) or [])
+                if isinstance(s, str) and "could not parse" not in s.lower()
+            ][:6],
             
             # DETAILED CALCULATION BREAKDOWN
             'calculation_breakdown': {
