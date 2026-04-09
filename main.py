@@ -1125,6 +1125,53 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         context_alignment_score = summary_data.get('context_alignment_score', None)
         context_alignment_verdict = summary_data.get('context_alignment_verdict', None)
         content_penalty_points = summary_data.get('content_penalty_points', 0)
+
+        # Evidence-based Context-Aware Analysis (deterministic): recompute alignment from the submitted
+        # lecture context + transcript excerpt, so the summary always flags obvious mismatches.
+        def _context_alignment_heuristic(lc: str, txt: str):
+            lc = (lc or "").strip()
+            txt = (txt or "").strip()
+            if not lc or not txt:
+                return None, None, "No lecture context or transcript excerpt available for alignment."
+            stop = {
+                "this","that","these","those","the","a","an","and","or","but","to","of","in","on","for","with","as","at","by","from",
+                "is","are","was","were","be","been","being","it","we","you","they","i","our","your","their",
+                "lecture","session","week","module","course","topic","learning","outcome","outcomes","students","student","audience",
+                "should","teach","about","using","use",
+            }
+            import re as _re
+            ctx_tokens = _re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())
+            ctx_terms = []
+            for tok in ctx_tokens:
+                if tok in stop:
+                    continue
+                if tok not in ctx_terms:
+                    ctx_terms.append(tok)
+                if len(ctx_terms) >= 18:
+                    break
+            tl = txt.lower()
+            hits = [w for w in ctx_terms if w in tl]
+            score = len(hits) / max(1, len(ctx_terms))
+            if score >= 0.35:
+                verdict = "match"
+            elif score >= 0.15:
+                verdict = "partial"
+            else:
+                verdict = "mismatch"
+            rationale = f"Keyword overlap between context and transcript excerpt is {len(hits)}/{len(ctx_terms)} (score={score:.2f})."
+            return round(float(score), 3), verdict, rationale
+
+        hs, hv, hr = _context_alignment_heuristic(lecture_context, transcript_excerpt or "")
+        if context_alignment_score is None and hs is not None:
+            context_alignment_score = hs
+        if not context_alignment_verdict and hv:
+            context_alignment_verdict = hv
+        # If mismatch is detected heuristically, ensure penalty is treated as applied for messaging.
+        try:
+            if (str(context_alignment_verdict or "").lower().strip() == "mismatch") and float(content_penalty_points or 0) < 4.9:
+                content_penalty_points = 5
+        except Exception:
+            pass
         
         # Instructor questions with CLI (evidence)
         questions_text = ""
@@ -1222,6 +1269,10 @@ Total instructor questions: {total_questions} | qpm: {questions_per_minute} | C+
 Transcript excerpt:
 {transcript_excerpt[:2500]}
 
+Evidence snippets (use these as verbatim cues in the narrative; keep quotes short):
+1) "{(transcript_excerpt.split('.')[:1][0] or '').strip()[:160]}"
+2) "{(''.join(transcript_excerpt.split('.')[1:2]) or '').strip()[:160]}"
+
 Frames sampled: {sample_frames_count} {filler_text}
 
 Rubric snippets (integrate meaning, do not paste as a list in final prose):
@@ -1272,6 +1323,10 @@ STRUCTURE:
 Paragraph 1 (Overall): Balanced overview; interpret Content, Delivery, Engagement and what that pattern implies for student learning. Weave in the Layer 1 context_alignment finding as a concrete sentence (alignment verdict, or explicit note that no context was provided).
 Paragraph 2 (Strengths): 2–4 strengths — organisation/scaffolding, conceptual clarity and reasoning, delivery (clarity, pacing, articulation). Explain why they help learning.
 Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific, constructive directions (questioning strategy, dialogue, uptake, distribution of prompts).
+
+EVIDENCE-BASED FEEDBACK (REQUIRED):
+- You MUST include at least TWO short verbatim cues from the provided \"Evidence snippets\" (each <= 12 words) across the three paragraphs.
+- When mentioning context alignment, anchor it to transcript cues (use an evidence snippet) and state explicitly if the submitted context looks mismatched.
 
 Return JSON only:
 {"paragraph_overall": "...", "paragraph_strengths": "...", "paragraph_growth": "..."}"""
