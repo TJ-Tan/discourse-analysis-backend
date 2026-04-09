@@ -1096,6 +1096,7 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         import json
         
         openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        force_full = bool(summary_data.get("force_full") or False)
         
         # Extract data from request (MARS + legacy fields)
         overall_score = summary_data.get('overall_score', 0)
@@ -1267,6 +1268,15 @@ Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific
 Return JSON only:
 {"paragraph_overall": "...", "paragraph_strengths": "...", "paragraph_growth": "..."}"""
 
+        if force_full:
+            narrative_system += """
+
+FORCE_FULL MODE:
+- Make the advice more detailed and actionable (still 3 paragraphs only).
+- Include at least 3 concrete next steps (embedded in paragraph 3 as specific actions).
+- Keep it insightful (why it matters for learning), not generic platitudes.
+"""
+
         interp_user = f"Layer 1 — interpret these facts:\n\n{raw_facts}"
         interp_json: Optional[dict] = None
         try:
@@ -1306,7 +1316,7 @@ Return JSON only:
                 {"role": "system", "content": narrative_system},
                 {"role": "user", "content": narrative_user},
             ],
-            max_completion_tokens=3200,
+            max_completion_tokens=4200 if force_full else 3200,
             response_format={"type": "json_object"},
         )
         
@@ -1338,6 +1348,7 @@ Return JSON only:
             # New summary format: three paragraphs only; omit legacy boxes in UI when present
             summary["strongest_strength"] = None
             summary["improvements"] = []
+            summary["summary_provenance"] = "server_llm_full" if force_full else "server_llm"
 
             return JSONResponse(content={'summary': summary})
             
@@ -1375,6 +1386,7 @@ Return JSON only:
                 "personalized_feedback": f"{fb_p1}\n\n{fb_p2}\n\n{fb_p3}",
                 "strongest_strength": None,
                 "improvements": [],
+                "summary_provenance": "server_fallback",
             }
             
             return JSONResponse(content={'summary': fallback_summary})
