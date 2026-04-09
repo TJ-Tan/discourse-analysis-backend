@@ -1162,9 +1162,9 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
             return round(float(score), 3), verdict, rationale
 
         hs, hv, hr = _context_alignment_heuristic(lecture_context, transcript_excerpt or "")
-        if context_alignment_score is None and hs is not None:
+        if hs is not None:
             context_alignment_score = hs
-        if not context_alignment_verdict and hv:
+        if hv:
             context_alignment_verdict = hv
         # If mismatch is detected heuristically, ensure penalty is treated as applied for messaging.
         try:
@@ -1462,6 +1462,21 @@ FORCE_FULL MODE:
                 f"{weakest_categories[0][0].lower()} if the goal is active, visible learning in the room or in follow-up tasks. "
                 f"{q_note}{ctx_sent}{rubric_extra}"
             )
+            # Evidence-based + Context-aware injection even for fallback summaries.
+            try:
+                if has_user_context and str(context_alignment_verdict or "").lower().strip() == "mismatch":
+                    ev1 = (transcript_excerpt or "").replace("\n", " ").strip()
+                    ev1 = ev1[:160]
+                    note = (
+                        f" Context-Aware Analysis: the submitted lecture context appears mismatched with the transcript excerpt "
+                        f"(alignment score {context_alignment_score if context_alignment_score is not None else '—'}). "
+                        f"Content includes a −{int(round(float(content_penalty_points or 5)))} point penalty for misalignment."
+                        + (f" Evidence cue: \"{ev1}\"." if ev1 else "")
+                    )
+                    if note.lower() not in fb_p1.lower():
+                        fb_p1 = (fb_p1 + note).strip()
+            except Exception:
+                pass
             fb_p2 = (
                 f"A clear strength lies in {strongest_category[0].lower()} (about {strongest_category[1]}/10 on this block). "
                 f"When this dimension is strong, learners are more likely to follow the intellectual thread, make sense of key ideas, "

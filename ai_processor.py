@@ -1807,10 +1807,11 @@ Return only the processed transcript with proper punctuation and sentence segmen
         tl = t.lower()
         context_line = ""
         if lc:
-            # Use the already computed alignment signal if available; else fall back to cheap overlap check.
-            alignment = p.get("context_alignment_score", None)
-            verdict = (p.get("context_alignment_verdict") or "").strip()
-            rationale = (p.get("context_alignment_rationale") or "").strip()
+            # Prefer heuristic alignment for Evidence-based Feedback; it is deterministic and robust.
+            heur = self._context_alignment_heuristic(lc, t)
+            alignment = heur.get("alignment_score")
+            verdict = (heur.get("verdict") or "").strip() or (p.get("context_alignment_verdict") or "").strip()
+            rationale = (heur.get("rationale") or "").strip() or (p.get("context_alignment_rationale") or "").strip()
             try:
                 alignment_f = float(alignment) if alignment is not None else None
             except Exception:
@@ -2214,12 +2215,21 @@ strengths, improvements, recommendations, alignment_comment"""
         if lc:
             try:
                 heur = self._context_alignment_heuristic(lc, speech_analysis.get("transcript") or "")
-                # If LLM alignment is missing/unreliable, use heuristic.
-                if p.get("context_alignment_score") is None:
+                # Always keep heuristic fields for transparency.
+                p["context_alignment_score_heuristic"] = heur.get("alignment_score")
+                p["context_alignment_verdict_heuristic"] = heur.get("verdict")
+                p["context_alignment_rationale_heuristic"] = heur.get("rationale")
+
+                # If LLM alignment is missing, use heuristic. If heuristic detects a strong mismatch,
+                # override LLM alignment (prevents false "reasonable alignment" on obviously wrong contexts).
+                hv = str(heur.get("verdict") or "").lower().strip()
+                hs = heur.get("alignment_score")
+                strong_mismatch = (hv == "mismatch") and (hs is not None) and (float(hs) <= 0.15)
+                if p.get("context_alignment_score") is None or strong_mismatch:
                     p["context_alignment_score"] = heur.get("alignment_score")
-                if not p.get("context_alignment_verdict"):
+                if not p.get("context_alignment_verdict") or strong_mismatch:
                     p["context_alignment_verdict"] = heur.get("verdict")
-                if not p.get("context_alignment_rationale"):
+                if not p.get("context_alignment_rationale") or strong_mismatch:
                     p["context_alignment_rationale"] = heur.get("rationale")
             except Exception:
                 pass
