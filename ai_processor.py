@@ -1737,7 +1737,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
             snip = snip + "…"
         return snip
 
-    def _fill_mars_content_evidence_fallback(self, transcript: str, p: Dict[str, Any]) -> Dict[str, Any]:
+    def _fill_mars_content_evidence_fallback(self, transcript: str, p: Dict[str, Any], lecture_context: str = "") -> Dict[str, Any]:
         """
         Populate evidence_<criterion> when the LLM doesn't provide useful evidence.
         Uses concrete transcript snippets and simple quantitative cues (keyword counts).
@@ -1745,6 +1745,61 @@ Return only the processed transcript with proper punctuation and sentence segmen
         t = (transcript or "").strip()
         if not t:
             return p
+
+        lc = (lecture_context or "").strip()
+        tl = t.lower()
+        context_line = ""
+        if lc:
+            # Use the already computed alignment signal if available; else fall back to cheap overlap check.
+            alignment = p.get("context_alignment_score", None)
+            verdict = (p.get("context_alignment_verdict") or "").strip()
+            rationale = (p.get("context_alignment_rationale") or "").strip()
+            try:
+                alignment_f = float(alignment) if alignment is not None else None
+            except Exception:
+                alignment_f = None
+
+            # Pick up to 3 meaningful context keywords and try to find a matching snippet in transcript.
+            stop = {
+                "this","that","these","those","the","a","an","and","or","but","to","of","in","on","for","with","as","at","by","from",
+                "is","are","was","were","be","been","being","it","we","you","they","i","our","your","their",
+                "lecture","session","week","module","course","topic","learning","outcome","outcomes","students","student","audience",
+            }
+            toks = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())[:220]
+            uniq = []
+            for x in toks:
+                if x in stop:
+                    continue
+                if x not in uniq:
+                    uniq.append(x)
+                if len(uniq) >= 12:
+                    break
+            hits = [w for w in uniq if w in tl]
+            snippet = ""
+            if hits:
+                for w in hits[:3]:
+                    snippet = self._snippet_around(t, w)
+                    if snippet:
+                        break
+            # If nothing matches, flag low overlap.
+            if alignment_f is None:
+                overlap = len(hits) / max(1, len(uniq))
+                alignment_f = overlap
+                verdict = verdict or ("match" if overlap >= 0.35 else ("partial" if overlap >= 0.15 else "mismatch"))
+            verdict_norm = verdict.lower() if verdict else ""
+            if verdict_norm in ("mismatch", "off", "off-focus") or (alignment_f is not None and alignment_f <= 0.25):
+                context_line = (
+                    "Context alignment appears weak: the submitted lecture context does not strongly match the transcript excerpt. "
+                    + (f"Example transcript cue: \"{snippet}\". " if snippet else "")
+                    + (f"Model rationale: {rationale} " if rationale else "")
+                    + "This may reduce Content scores because the structure/explanations are evaluated against the stated module/topic."
+                ).strip()
+            else:
+                context_line = (
+                    "Context alignment appears reasonable: the transcript contains cues consistent with the submitted lecture context. "
+                    + (f"Example cue: \"{snippet}\". " if snippet else "")
+                    + (f"Model rationale: {rationale} " if rationale else "")
+                ).strip()
 
         words = max(1, len(t.split()))
 
@@ -1819,6 +1874,24 @@ Return only the processed transcript with proper punctuation and sentence segmen
             "Evidence: representation diversity is inferred from references to multiple forms (e.g., verbal explanation plus equations/diagrams/slides). "
             "If the recording is slides-heavy without verbal description, the system may under-detect representations that are only visible on screen.",
         )
+
+        # Attach context line to all nine criteria evidence blocks (Content 1.1–1.3) if context exists.
+        if context_line:
+            for k in (
+                "structural_sequencing",
+                "logical_consistency",
+                "closure_framing",
+                "conceptual_accuracy",
+                "causal_reasoning_depth",
+                "multi_perspective_explanation",
+                "example_quality_frequency",
+                "analogy_concept_bridging",
+                "representation_diversity",
+            ):
+                ek = f"evidence_{k}"
+                cur = str(p.get(ek, "") or "").strip()
+                if cur and context_line.lower() not in cur.lower():
+                    p[ek] = f"{cur} {context_line}".strip()
         return p
 
     async def analyze_student_feedback_metrics(self, speech_analysis: Dict) -> Dict[str, Any]:
@@ -2084,7 +2157,7 @@ strengths, improvements, recommendations, alignment_comment"""
             speech_analysis.get("transcript") or "",
             float(p.get("causal_reasoning_depth") or 7.0),
         )
-        p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p)
+        p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p, lecture_context=lc)
         return p
         
 
