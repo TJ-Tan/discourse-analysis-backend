@@ -1560,17 +1560,26 @@ Return only the processed transcript with proper punctuation and sentence segmen
             }
             
             total_weight = 0
+
+            def _safe_score(v, default: float):
+                # Vision model occasionally returns strings/lists; coerce safely to float.
+                if isinstance(v, (list, tuple)):
+                    v = v[0] if v else default
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return float(default)
             
             for i, analysis in enumerate(frame_analyses):
                 # Weight frames in the middle more heavily (bell curve weighting)
                 position_ratio = i / (total_frames - 1) if total_frames > 1 else 0.5
                 weight = 1.0 - abs(position_ratio - 0.5) * 0.5  # Ranges from 0.75 to 1.0
                 
-                weighted_scores['eye_contact'] += analysis.get('eye_contact_score', 7) * weight
-                weighted_scores['gestures'] += analysis.get('gestures_score', 7) * weight
-                weighted_scores['posture'] += analysis.get('posture_score', 7) * weight
-                weighted_scores['engagement'] += analysis.get('engagement_score', 7) * weight
-                weighted_scores['professionalism'] += analysis.get('professionalism_score', 8) * weight
+                weighted_scores['eye_contact'] += _safe_score(analysis.get('eye_contact_score', 7), 7.0) * weight
+                weighted_scores['gestures'] += _safe_score(analysis.get('gestures_score', 7), 7.0) * weight
+                weighted_scores['posture'] += _safe_score(analysis.get('posture_score', 7), 7.0) * weight
+                weighted_scores['engagement'] += _safe_score(analysis.get('engagement_score', 7), 7.0) * weight
+                weighted_scores['professionalism'] += _safe_score(analysis.get('professionalism_score', 8), 8.0) * weight
                 
                 total_weight += weight
             
