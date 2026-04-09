@@ -282,8 +282,10 @@ PROCESSING_TIMEOUT = 1800  # 30 minutes total processing timeout
 
 # End-to-end timing expectations (used for UX messaging and ETA estimation).
 # "Processing" excludes upload time and queue wait.
-TYPICAL_PROCESSING_MINUTES_RANGE = (10, 15)
-TYPICAL_PROCESSING_MINUTES_BASELINE = 12
+# ~1 h recordings are often 15–20+ min to analyse; ETA baseline is a midpoint for queue math.
+ONE_HOUR_VIDEO_PROCESSING_MINUTES_RANGE = (15, 20)
+TYPICAL_PROCESSING_MINUTES_RANGE = (12, 20)
+TYPICAL_PROCESSING_MINUTES_BASELINE = 17
 
 @app.get("/")
 async def root():
@@ -495,9 +497,15 @@ def get_analysis_timing_metadata():
     """Shared metadata for frontend UX messaging."""
     return {
         "typical_processing_minutes_range": list(TYPICAL_PROCESSING_MINUTES_RANGE),
+        "one_hour_video_processing_minutes_range": list(ONE_HOUR_VIDEO_PROCESSING_MINUTES_RANGE),
         "typical_processing_minutes_baseline": TYPICAL_PROCESSING_MINUTES_BASELINE,
         "processing_timeout_minutes": round(PROCESSING_TIMEOUT / 60),
         "max_concurrent_jobs": MAX_CONCURRENT_JOBS,
+        "upload_timing_explanation": (
+            "After upload, analysis time depends on lecture length, vision/LLM workload, and server traffic. "
+            f"As a guide, a ~1 hour recording often needs about {ONE_HOUR_VIDEO_PROCESSING_MINUTES_RANGE[0]}–{ONE_HOUR_VIDEO_PROCESSING_MINUTES_RANGE[1]} minutes; "
+            "shorter videos are usually faster, and queueing or heavy load can add delay."
+        ),
         "notes": {
             "processing_excludes_upload_and_queue": True,
         },
@@ -543,13 +551,13 @@ def get_queue_status(current_user_ip: str = None):
                 progress = result.get('progress', 0)
                 current_job_progress = progress
                 # Estimate remaining time based on progress
-                # Assume total processing time is ~10–15 minutes for a typical video
+                # Assume total processing time is ~15–20 minutes for a ~1 h-class video (rough ETA)
                 estimated_total_minutes = TYPICAL_PROCESSING_MINUTES_BASELINE
                 remaining_progress = 100 - progress
                 estimated_wait_minutes = (remaining_progress / 100) * estimated_total_minutes
                 break
     
-    # Add time for queued jobs (assume ~12 minutes per job)
+    # Add time for queued jobs (rough minutes per queued job)
     estimated_wait_minutes += queued_jobs * TYPICAL_PROCESSING_MINUTES_BASELINE
     
     # Determine warning level (only if there are OTHER users, not the current user)
@@ -906,7 +914,11 @@ async def upload_video(
         "status": "processing",
         "message": "Video uploaded successfully. Enhanced AI analysis started.",
         "filename": file.filename,
-        "estimated_time": "10–15 minutes (typical, after upload)" if AI_AVAILABLE else "15 seconds (mock)",
+        "estimated_time": (
+            "About 15–20 minutes for a ~1 hour video after upload (varies with length & server load)"
+            if AI_AVAILABLE
+            else "15 seconds (mock)"
+        ),
         "analysis_timing": get_analysis_timing_metadata(),
         "enhancement_features": [
             f"Analyzing up to {current_config.get('sampling_config', {}).get('max_frames_analyzed', 40)} video frames",

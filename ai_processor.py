@@ -1645,10 +1645,10 @@ Return only the processed transcript with proper punctuation and sentence segmen
         blended = 0.78 * float(llm_score) + 0.22 * heuristic
         return round(min(10.0, max(0.0, blended)), 1)
 
-    def _safe_json_loads(self, raw: str) -> Dict[str, Any]:
+    def _extract_json_object_string(self, raw: str) -> str:
         """
-        Best-effort JSON extraction for LLM outputs.
-        Handles code fences and accidental surrounding text.
+        Extract the first top-level JSON object from LLM text (balanced braces, string-aware).
+        Avoids naive first-{ to last-} slicing which breaks on nested structures or extra prose.
         """
         if raw is None:
             raise ValueError("empty")
@@ -1657,13 +1657,69 @@ Return only the processed transcript with proper punctuation and sentence segmen
             raise ValueError("empty")
         if txt.startswith("```"):
             txt = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", txt)
-            txt = re.sub(r"\s*```$", "", txt)
+            txt = re.sub(r"\s*```\s*$", "", txt)
             txt = txt.strip()
-        i = txt.find("{")
-        j = txt.rfind("}")
-        if i != -1 and j != -1 and j > i:
-            txt = txt[i : j + 1]
-        return json.loads(txt)
+        start = txt.find("{")
+        if start < 0:
+            raise ValueError("no json object start")
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(txt)):
+            ch = txt[i]
+            if esc:
+                esc = False
+                continue
+            if in_str:
+                if ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return txt[start : i + 1]
+        raise ValueError("unbalanced json object")
+
+    def _safe_json_loads(self, raw: str) -> Dict[str, Any]:
+        """
+        Best-effort JSON extraction for LLM outputs.
+        Handles code fences, surrounding prose, and mild trailing-comma issues.
+        """
+        blob = self._extract_json_object_string(raw)
+        try:
+            return json.loads(blob)
+        except json.JSONDecodeError:
+            blob2 = re.sub(r",\s*}", "}", blob)
+            blob2 = re.sub(r",\s*]", "]", blob2)
+            return json.loads(blob2)
+
+    def _chat_json_completion(
+        self,
+        messages: List[Dict[str, str]],
+        max_completion_tokens: int,
+        prefer_json_object_format: bool = False,
+    ):
+        """Chat completion; optionally request JSON mode, with one fallback if the API rejects it."""
+        kwargs: Dict[str, Any] = {
+            "model": "gpt-5-nano",
+            "messages": messages,
+            "max_completion_tokens": max_completion_tokens,
+        }
+        if prefer_json_object_format:
+            kwargs["response_format"] = {"type": "json_object"}
+            try:
+                return openai_client.chat.completions.create(**kwargs)
+            except Exception:
+                kwargs.pop("response_format", None)
+                return openai_client.chat.completions.create(**kwargs)
+        return openai_client.chat.completions.create(**kwargs)
 
     def _snippet_around(self, text: str, needle: str, radius: int = 110) -> str:
         if not text:
@@ -1902,12 +1958,7 @@ Return JSON only:
         - Scores — eye_contact: {visual_analysis.get('scores', {}).get('eye_contact', 'N/A')}, gestures: {visual_analysis.get('scores', {}).get('gestures', 'N/A')}, posture: {visual_analysis.get('scores', {}).get('posture', 'N/A')}, engagement: {visual_analysis.get('scores', {}).get('engagement', 'N/A')}, professionalism: {visual_analysis.get('scores', {}).get('professionalism', 'N/A')}
         """
 
-        response = openai_client.chat.completions.create(
-            model="gpt-5-nano",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """You are an expert pedagogical analyst. Score the lecture transcript (1-10 each) for MARS Content rubric:
+        system_pedagogy = """You are an expert pedagogical analyst. Score the lecture transcript (1-10 each) for MARS Content rubric:
 
 A) Content Organisation (MARS 1.1): structural_sequencing, logical_consistency, closure_framing
 B) Explanation Quality (MARS 1.2): conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
@@ -1923,11 +1974,11 @@ Also provide legacy aggregate scores (1-10): content_organization, engagement_te
 
 For EACH of the nine MARS criteria above, add evidence_<criterion_key>: a string (3-5 sentences) explaining WHY that score. Each must cite at least one short verbatim phrase from the transcript when possible, and give an approximate time (e.g. "around 2:30") when you can infer it from the excerpt. If no clear quote exists, still reference concrete patterns (e.g. number of examples, presence of recap). When context is provided, evidence must mention whether content matches or violates that context.
 
-Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).""",
-                },
-                {
-                    "role": "user",
-                    "content": f"""{context}
+Plus: strengths (array), improvements (array), recommendations (array), detailed_analysis (string).
+
+You must output JSON only (one object) so it can be parsed programmatically."""
+
+        user_pedagogy = f"""{context}
 
 Return a single JSON object with ALL keys:
 structural_sequencing, logical_consistency, closure_framing,
@@ -1937,65 +1988,40 @@ evidence_structural_sequencing, evidence_logical_consistency, evidence_closure_f
 evidence_conceptual_accuracy, evidence_causal_reasoning_depth, evidence_multi_perspective_explanation,
 evidence_example_quality_frequency, evidence_analogy_concept_bridging, evidence_representation_diversity,
 content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
-strengths, improvements, recommendations, detailed_analysis""",
-                },
-            ],
-            max_completion_tokens=3800,
-        )
+strengths, improvements, recommendations, detailed_analysis"""
 
-        try:
-            response_content = response.choices[0].message.content
-            if not response_content:
-                raise ValueError("AI response content is None or empty")
-            p = self._safe_json_loads(response_content)
-            p = self._ensure_mars_pedagogy_fields(p)
-            # Compute context ↔ transcript alignment explicitly so scoring can be deterministically penalised
-            # when the instructor-provided context does not match what is actually taught.
-            # (We cannot rely solely on the rubric prompt being followed in every case.)
-            p["lecture_context_provided"] = bool(lc)
-            if lc:
-                try:
-                    align_resp = openai_client.chat.completions.create(
-                        model="gpt-5-nano",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You judge topical alignment between instructor-provided lecture context and the transcript.\n"
-                                    "Return ONLY JSON with keys: alignment_score (number 0.0-1.0), verdict (one of: match, partial, mismatch), rationale (1-3 sentences).\n"
-                                    "alignment_score meaning: 1.0 = clearly the same topic/discipline; 0.0 = clearly different discipline/topic.\n"
-                                    "Be strict: if context says one discipline (e.g. political science) but transcript is mostly another (e.g. BIM / construction), verdict=mismatch and alignment_score <= 0.2."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"LECTURE CONTEXT:\n{lc}\n\n"
-                                    f"TRANSCRIPT EXCERPT:\n{(speech_analysis.get('transcript') or '')[:7000]}\n"
-                                ),
-                            },
-                        ],
-                        max_completion_tokens=300,
-                    )
-                    ac = (align_resp.choices[0].message.content or "").strip()
-                    aj = self._safe_json_loads(ac) if ac else {}
-                    try:
-                        p["context_alignment_score"] = float(aj.get("alignment_score"))
-                    except Exception:
-                        p["context_alignment_score"] = None
-                    p["context_alignment_verdict"] = aj.get("verdict")
-                    p["context_alignment_rationale"] = aj.get("rationale")
-                except Exception:
-                    p["context_alignment_score"] = None
-                    p["context_alignment_verdict"] = None
-                    p["context_alignment_rationale"] = None
-            p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
-                speech_analysis.get("transcript") or "",
-                float(p.get("causal_reasoning_depth") or 7.0),
-            )
-            p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p)
-            return p
-        except (json.JSONDecodeError, ValueError, AttributeError):
+        p: Optional[Dict[str, Any]] = None
+        last_err: Optional[Exception] = None
+        for attempt in range(2):
+            suffix = ""
+            if attempt == 1:
+                suffix = (
+                    "\n\nIMPORTANT: Your previous answer could not be parsed. Reply with ONE valid JSON object only. "
+                    "No markdown code fences and no text before or after the object. Use double-quoted keys and strings."
+                )
+            try:
+                response = self._chat_json_completion(
+                    messages=[
+                        {"role": "system", "content": system_pedagogy},
+                        {"role": "user", "content": user_pedagogy + suffix},
+                    ],
+                    max_completion_tokens=4500,
+                    prefer_json_object_format=(attempt == 0),
+                )
+                if not response or not getattr(response, "choices", None):
+                    raise ValueError("empty completion")
+                msg = response.choices[0].message
+                response_content = (getattr(msg, "content", None) or "").strip()
+                if not response_content:
+                    raise ValueError("AI response content is None or empty")
+                p = self._safe_json_loads(response_content)
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning("Pedagogy JSON attempt %s failed: %s", attempt + 1, e)
+
+        if p is None:
+            logger.error("Pedagogy analysis using template fallback after JSON failures: %s", last_err)
             fb = {
                 "content_organization": 7.5,
                 "engagement_techniques": 7.0,
@@ -2003,15 +2029,64 @@ strengths, improvements, recommendations, detailed_analysis""",
                 "use_of_examples": 7.2,
                 "knowledge_checking": 6.8,
                 "overall_effectiveness": 7.3,
-                "strengths": [
-                    "Clear delivery",
-                    "Structured presentation",
-                ],
-                "improvements": ["Add more interaction", "More examples"],
-                "recommendations": ["Check understanding more often"],
-                "detailed_analysis": "Fallback pedagogical assessment.",
+                "strengths": ["(System could not parse the model response; re-run analysis.)"],
+                "improvements": ["If this persists, contact support with your analysis time."],
+                "recommendations": ["Retry upload when the service is less busy."],
+                "detailed_analysis": (
+                    "The pedagogical model did not return usable JSON, so these scores are provisional placeholders only. "
+                    "This is not an evaluation of your teaching. Please run the analysis again."
+                ),
             }
-            return self._ensure_mars_pedagogy_fields(fb)
+            fb = self._ensure_mars_pedagogy_fields(fb)
+            fb["lecture_context_provided"] = bool(lc)
+            return fb
+
+        p = self._ensure_mars_pedagogy_fields(p)
+        p["lecture_context_provided"] = bool(lc)
+        if lc:
+            try:
+                align_resp = self._chat_json_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You judge topical alignment between instructor-provided lecture context and the transcript.\n"
+                                "Return ONLY JSON with keys: alignment_score (number 0.0-1.0), verdict (one of: match, partial, mismatch), rationale (1-3 sentences).\n"
+                                "alignment_score meaning: 1.0 = clearly the same topic/discipline; 0.0 = clearly different discipline/topic.\n"
+                                "Be strict: if context says one discipline (e.g. political science) but transcript is mostly another (e.g. BIM / construction), verdict=mismatch and alignment_score <= 0.2."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"LECTURE CONTEXT:\n{lc}\n\n"
+                                f"TRANSCRIPT EXCERPT:\n{(speech_analysis.get('transcript') or '')[:7000]}\n"
+                            ),
+                        },
+                    ],
+                    max_completion_tokens=400,
+                    prefer_json_object_format=True,
+                )
+                ac = ""
+                if align_resp and align_resp.choices:
+                    ac = (align_resp.choices[0].message.content or "").strip()
+                aj = self._safe_json_loads(ac) if ac else {}
+                try:
+                    p["context_alignment_score"] = float(aj.get("alignment_score"))
+                except Exception:
+                    p["context_alignment_score"] = None
+                p["context_alignment_verdict"] = aj.get("verdict")
+                p["context_alignment_rationale"] = aj.get("rationale")
+            except Exception:
+                p["context_alignment_score"] = None
+                p["context_alignment_verdict"] = None
+                p["context_alignment_rationale"] = None
+        p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
+            speech_analysis.get("transcript") or "",
+            float(p.get("causal_reasoning_depth") or 7.0),
+        )
+        p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p)
+        return p
         
 
     def _compute_question_distribution_stability(self, questions: List[Dict], duration_seconds: float) -> Dict[str, Any]:
