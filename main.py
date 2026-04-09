@@ -1122,6 +1122,9 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         explanations = summary_data.get('explanations', {})
         extra_strengths = summary_data.get('extra_strengths', []) or []
         extra_growth = summary_data.get('extra_growth', []) or []
+        context_alignment_score = summary_data.get('context_alignment_score', None)
+        context_alignment_verdict = summary_data.get('context_alignment_verdict', None)
+        content_penalty_points = summary_data.get('content_penalty_points', 0)
         
         # Instructor questions with CLI (evidence)
         questions_text = ""
@@ -1203,6 +1206,10 @@ Speech {speech_score}/10 | Body {body_language_score}/10 | Interaction block {in
 Strongest block: {strongest_category[0]} ({strongest_category[1]}/10)
 Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){weaker_tail}
 
+Context-aware analysis signals (do not ignore):
+Context alignment verdict: {context_alignment_verdict} | alignment_score: {context_alignment_score}
+Content penalty (if context mismatch): -{content_penalty_points} point(s)
+
 LECTURE CONTEXT (instructor-supplied; use with transcript excerpt below):
 {lecture_context_wrapped}
 
@@ -1236,6 +1243,7 @@ Return JSON only with keys:
   • If lecture context was submitted: 1–2 sentences comparing that context (module, topic, ILOs, audience) to themes and terminology visible in the transcript excerpt. State whether delivery appears aligned, partially aligned, or off-focus/mixed, citing brief paraphrase or topic cues from the transcript (do not invent module codes).
   • If NO context was submitted: exactly one clear sentence, e.g. that no lecture context was provided (module, intended learning outcomes, etc.), so stated-versus-delivered alignment cannot be evaluated from the inputs.
   FORBIDDEN here: phrases like "interpretation should", "should explicitly consider", "reviewers should", or any instruction telling someone how to interpret — only state findings.
+  • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: explicitly say the submitted context appears wrong/mismatched, and mention that Content was penalised by 5 points for misalignment.
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
