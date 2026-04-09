@@ -1624,6 +1624,13 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
                     duration_seconds = max(0, int((t1 - t0).total_seconds()))
             except Exception:
                 duration_seconds = None
+            # Embed timing inside results so the UI/PDF still has it if client state drops these fields
+            if isinstance(results, dict):
+                results["analysis_timing"] = {
+                    "upload_completed_at": upload_completed_at,
+                    "completed_at": completed_at,
+                    "analysis_duration_seconds": duration_seconds,
+                }
             analysis_results[analysis_id].update({
                 "status": "completed",
                 "progress": 100,
