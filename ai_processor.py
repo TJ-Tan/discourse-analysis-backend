@@ -3563,6 +3563,21 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         )
 
         _vs = visual_analysis.get('scores', {}) or {}
+
+        def _body_metric_float(val, default=None):
+            if isinstance(val, (list, tuple)):
+                val = val[0] if val else None
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        def _fmt_m10(v):
+            x = _body_metric_float(v)
+            return f"{x:.1f}" if x is not None else "—"
+
         _frames_n = int(visual_analysis.get('frames_analyzed', 0) or 0)
         _vs_pairs = {
             "eye contact": _vs.get('eye_contact', None),
@@ -3571,20 +3586,27 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             "facial engagement": _vs.get('engagement', None),
             "professionalism": _vs.get('professionalism', None),
         }
-        _vs_num = {k: float(v) for k, v in _vs_pairs.items() if isinstance(v, (int, float))}
+        _vs_num = {}
+        for k, v in _vs_pairs.items():
+            fv = _body_metric_float(v)
+            if fv is not None:
+                _vs_num[k] = fv
         if _vs_num:
             _best_k = max(_vs_num, key=_vs_num.get)
             _worst_k = min(_vs_num, key=_vs_num.get)
-            _best = f"strongest signal: {_best_k} {_vs_num[_best_k]:.1f}/10"
-            _worst = f"weakest signal: {_worst_k} {_vs_num[_worst_k]:.1f}/10"
+            _best = f"Strongest sub-signal: {_best_k} ({_vs_num[_best_k]:.1f}/10)"
+            _worst = f"Weakest sub-signal: {_worst_k} ({_vs_num[_worst_k]:.1f}/10)"
         else:
-            _best, _worst = "strongest signal: —", "weakest signal: —"
+            _best, _worst = "Strongest sub-signal: —", "Weakest sub-signal: —"
         _delivery_body_evidence = (
-            f"Body language category score {round(visual_score, 1)}/10, computed from {_frames_n} sampled frame(s). "
-            f"Frame-averaged signals: eye contact {_vs.get('eye_contact', '—')}/10; gestures {_vs.get('gestures', '—')}/10; "
-            f"posture {_vs.get('posture', '—')}/10; facial engagement {_vs.get('engagement', '—')}/10; "
-            f"professionalism {_vs.get('professionalism', '—')}/10. {_best}; {_worst}. "
-            "Interpret with recording constraints in mind (camera angle, distance, or slides-heavy layouts can hide facial/gesture cues)."
+            f"Body language category score {round(visual_score, 1)}/10 from {_frames_n} sampled frame(s), same pattern as speech: "
+            f"each metric is a vision-model 1–10 score per frame, then temporally aggregated (middle frames weighted slightly higher). "
+            f"Sub-metric means — eye contact {_fmt_m10(_vs.get('eye_contact'))}/10; gestures {_fmt_m10(_vs.get('gestures'))}/10; "
+            f"posture {_fmt_m10(_vs.get('posture'))}/10; facial engagement {_fmt_m10(_vs.get('engagement'))}/10; "
+            f"professionalism {_fmt_m10(_vs.get('professionalism'))}/10. "
+            f"{_best}. {_worst}. "
+            "Category score is the configured weighted sum of these five means. "
+            "Interpret cautiously when the recording hides face or gestures (camera angle, distance, or slide-heavy layouts)."
         )
         
         # Build the result dictionary
