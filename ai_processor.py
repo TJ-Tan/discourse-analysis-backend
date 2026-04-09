@@ -1737,6 +1737,63 @@ Return only the processed transcript with proper punctuation and sentence segmen
             snip = snip + "…"
         return snip
 
+    def _context_alignment_heuristic(self, lecture_context: str, transcript: str) -> Dict[str, Any]:
+        """
+        Deterministic context↔transcript alignment (0–1) with evidence.
+        Used to make Context-Aware Analysis reliable even when an LLM alignment call fails.
+        """
+        lc = (lecture_context or "").strip()
+        t = (transcript or "").strip()
+        if not lc or not t:
+            return {
+                "alignment_score": None,
+                "verdict": None,
+                "rationale": "No lecture context or transcript text available for alignment check.",
+                "matched_terms": [],
+                "snippet": "",
+            }
+        stop = {
+            "this","that","these","those","the","a","an","and","or","but","to","of","in","on","for","with","as","at","by","from",
+            "is","are","was","were","be","been","being","it","we","you","they","i","our","your","their",
+            "lecture","session","week","module","course","topic","learning","outcome","outcomes","students","student","audience",
+            "should","teach","about","using","use",
+        }
+        ctx_tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())
+        ctx_terms: List[str] = []
+        for tok in ctx_tokens:
+            if tok in stop:
+                continue
+            if tok not in ctx_terms:
+                ctx_terms.append(tok)
+            if len(ctx_terms) >= 18:
+                break
+        tl = t.lower()
+        hits = [w for w in ctx_terms if w in tl]
+        score = len(hits) / max(1, len(ctx_terms))
+        if score >= 0.35:
+            verdict = "match"
+        elif score >= 0.15:
+            verdict = "partial"
+        else:
+            verdict = "mismatch"
+        snippet = ""
+        if hits:
+            for w in hits[:3]:
+                snippet = self._snippet_around(t, w)
+                if snippet:
+                    break
+        rationale = (
+            f"Keyword overlap between context and transcript is {len(hits)}/{len(ctx_terms)} terms (score={score:.2f})."
+            + (f" Example matched cue: \"{snippet}\"." if snippet else "")
+        )
+        return {
+            "alignment_score": round(float(score), 3),
+            "verdict": verdict,
+            "rationale": rationale,
+            "matched_terms": hits[:10],
+            "snippet": snippet,
+        }
+
     def _fill_mars_content_evidence_fallback(self, transcript: str, p: Dict[str, Any], lecture_context: str = "") -> Dict[str, Any]:
         """
         Populate evidence_<criterion> when the LLM doesn't provide useful evidence.
@@ -2153,6 +2210,19 @@ strengths, improvements, recommendations, alignment_comment"""
                 p["context_alignment_score"] = None
                 p["context_alignment_verdict"] = None
                 p["context_alignment_rationale"] = None
+        # Ensure alignment fields exist deterministically (Evidence-based Feedback + Context-Aware Analysis).
+        if lc:
+            try:
+                heur = self._context_alignment_heuristic(lc, speech_analysis.get("transcript") or "")
+                # If LLM alignment is missing/unreliable, use heuristic.
+                if p.get("context_alignment_score") is None:
+                    p["context_alignment_score"] = heur.get("alignment_score")
+                if not p.get("context_alignment_verdict"):
+                    p["context_alignment_verdict"] = heur.get("verdict")
+                if not p.get("context_alignment_rationale"):
+                    p["context_alignment_rationale"] = heur.get("rationale")
+            except Exception:
+                pass
         p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
             speech_analysis.get("transcript") or "",
             float(p.get("causal_reasoning_depth") or 7.0),
@@ -3675,6 +3745,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
             presentation_score * category_weights["presentation_skills"]
         )
         overall_score = round(mars_overall_score, 1)
+
+        # Ensure Content evidence exists (Evidence-based Feedback) even if upstream LLM omitted evidence keys.
+        try:
+            _lc2 = (getattr(self, "lecture_context", None) or "").strip()
+            pedagogical_analysis = self._fill_mars_content_evidence_fallback(
+                speech_analysis.get("transcript") or "",
+                dict(pedagogical_analysis or {}),
+                lecture_context=_lc2,
+            )
+        except Exception:
+            pass
 
         _mars_ck = (
             'structural_sequencing', 'logical_consistency', 'closure_framing',

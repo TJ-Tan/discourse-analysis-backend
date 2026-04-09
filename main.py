@@ -1358,6 +1358,33 @@ FORCE_FULL MODE:
             summary["improvements"] = []
             summary["summary_provenance"] = "server_llm_full" if force_full else "server_llm"
 
+            # Hard-enforce Context-Aware Analysis mention when mismatch + penalty are signaled.
+            try:
+                v = str(context_alignment_verdict or "").lower().strip()
+                pen = float(content_penalty_points or 0)
+                if (v == "mismatch" or pen >= 4.9) and has_user_context:
+                    must = (
+                        f"Note on lecture context alignment: the submitted context appears mismatched with the transcript excerpt "
+                        f"(alignment verdict: {context_alignment_verdict or 'mismatch'}). "
+                        f"As part of MARS Context-Aware Analysis, the Content score includes a −{int(round(pen or 5))} point penalty for misalignment."
+                    )
+                    pf = (summary.get("personalized_feedback") or "").strip()
+                    if must.lower() not in pf.lower():
+                        # Insert after the first sentence of paragraph 1 if possible.
+                        parts = pf.split("\n\n")
+                        if parts:
+                            p1x = parts[0]
+                            # naive split on first period
+                            dot = p1x.find(".")
+                            if dot != -1 and dot < 240:
+                                p1x = p1x[: dot + 1] + " " + must + p1x[dot + 1 :]
+                            else:
+                                p1x = must + " " + p1x
+                            parts[0] = p1x.strip()
+                            summary["personalized_feedback"] = "\n\n".join(parts).strip()
+            except Exception:
+                pass
+
             return JSONResponse(content={'summary': summary})
             
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
