@@ -33,6 +33,7 @@ from metrics_config import (
     compute_mars_delivery_category_score,
     compute_mars_engagement_category_score, compute_mars_overall_score,
 )
+from context_narrative import human_context_mismatch_paragraph
 
 # Load environment variables
 load_dotenv()
@@ -3765,6 +3766,28 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         )
         overall_score = round(mars_overall_score, 1)
 
+        _pen_pts = float(_content_detail.get("content_context_misalignment_penalty_points", 0) or 0)
+        _cbefore = float(_content_detail.get("content_category_score_before_penalty", mars_content_score) or 0)
+        _trans_ex = speech_analysis.get("transcript") or ""
+        _trans_ex = _trans_ex[:2500] if isinstance(_trans_ex, str) else ""
+        _lc_for_narr = (getattr(self, "lecture_context", None) or "").strip()
+        _mm_blurb = (
+            human_context_mismatch_paragraph(_lc_for_narr, _trans_ex, _pen_pts)
+            if _pen_pts >= 0.01
+            else ""
+        )
+        _content_adjustment = None
+        if _pen_pts >= 0.01:
+            _content_adjustment = {
+                "before_penalty": round(_cbefore, 2),
+                "penalty_points": round(_pen_pts, 2),
+                "after_penalty": round(float(mars_content_score), 2),
+                "detail": (
+                    f"Content (used in MARS) = max(0, {round(_cbefore, 2)} − {int(round(_pen_pts))}) "
+                    f"= {round(float(mars_content_score), 2)}"
+                ),
+            }
+
         # Ensure Content evidence exists (Evidence-based Feedback) even if upstream LLM omitted evidence keys.
         try:
             _lc2 = (getattr(self, "lecture_context", None) or "").strip()
@@ -3876,6 +3899,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'context_alignment_rationale': pedagogical_analysis.get('context_alignment_rationale'),
                     'content_formula': _content_detail['formula'],
                     'criteria_weights': MARS_CONFIG.get('content_criteria_weights', {}),
+                    'context_mismatch_instructor_blurb': _mm_blurb or None,
                 },
                 'delivery_score': round(mars_delivery_score, 2),
                 'engagement_score': round(mars_engagement_score, 2),
@@ -4131,6 +4155,7 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'expanded': (
                         f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
                     ),
+                    'content_adjustment': _content_adjustment,
                 },
                 'legacy_reference_equal_weights': {
                     'category_weights': {
@@ -4171,8 +4196,17 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 },
                 'final_calculation': {
                     'formula': 'MARS: 0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                    'content_adjustment': _content_adjustment,
                     'calculation': (
                         f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
+                    ),
+                    'calculation_note': (
+                        (
+                            f"Content entering the formula is {round(mars_content_score, 2)}/10 after applying the "
+                            f"Context-Aware penalty (−{int(round(_pen_pts))} from {round(_cbefore, 2)}/10)."
+                        )
+                        if _pen_pts >= 0.01
+                        else None
                     ),
                     'result': round(overall_score, 1),
                     'legacy_equal_weight_formula': f'(Speech × {category_weights["speech_analysis"]:.2f}) + ... (see legacy_reference_equal_weights)',

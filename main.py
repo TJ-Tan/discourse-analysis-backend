@@ -159,6 +159,12 @@ def _safe_json_loads_llm(raw: str) -> dict:
 
 # Import enhanced AI processor and configuration
 try:
+    from context_narrative import human_context_mismatch_paragraph
+except ImportError:
+    def human_context_mismatch_paragraph(lecture_context, transcript_excerpt, penalty_points):  # type: ignore
+        return ""
+
+try:
     from ai_processor import video_processor
     from metrics_config import get_configurable_parameters, update_configuration, ANALYSIS_CONFIG
     AI_AVAILABLE = True
@@ -1294,7 +1300,7 @@ Return JSON only with keys:
   • If lecture context was submitted: 1–2 sentences comparing that context (module, topic, ILOs, audience) to themes and terminology visible in the transcript excerpt. State whether delivery appears aligned, partially aligned, or off-focus/mixed, citing brief paraphrase or topic cues from the transcript (do not invent module codes).
   • If NO context was submitted: exactly one clear sentence, e.g. that no lecture context was provided (module, intended learning outcomes, etc.), so stated-versus-delivered alignment cannot be evaluated from the inputs.
   FORBIDDEN here: phrases like "interpretation should", "should explicitly consider", "reviewers should", or any instruction telling someone how to interpret — only state findings.
-  • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: explicitly say the submitted context appears wrong/mismatched, and mention that Content was penalised by 5 points for misalignment.
+  • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: in plain language (no "alignment score 0.00" jargon), say what the instructor claimed vs what the transcript suggests (e.g. topic or discipline mismatch), quote a short transcript cue, and state that Content was penalised by 5 points for misalignment.
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
@@ -1326,7 +1332,7 @@ Paragraph 3 (Growth opportunity): Weakest dimension (often engagement); specific
 
 EVIDENCE-BASED FEEDBACK (REQUIRED):
 - You MUST include at least TWO short verbatim cues from the provided \"Evidence snippets\" (each <= 12 words) across the three paragraphs.
-- When mentioning context alignment, anchor it to transcript cues (use an evidence snippet) and state explicitly if the submitted context looks mismatched.
+- When mentioning context alignment, write conversationally (e.g. "In our Context-Aware Analysis…"); anchor to transcript cues with a short quoted snippet; never lead with raw numeric alignment_score unless you immediately explain it in plain language.
 
 Return JSON only:
 {"paragraph_overall": "...", "paragraph_strengths": "...", "paragraph_growth": "..."}"""
@@ -1418,13 +1424,13 @@ FORCE_FULL MODE:
                 v = str(context_alignment_verdict or "").lower().strip()
                 pen = float(content_penalty_points or 0)
                 if (v == "mismatch" or pen >= 4.9) and has_user_context:
-                    must = (
-                        f"Note on lecture context alignment: the submitted context appears mismatched with the transcript excerpt "
-                        f"(alignment verdict: {context_alignment_verdict or 'mismatch'}). "
-                        f"As part of MARS Context-Aware Analysis, the Content score includes a −{int(round(pen or 5))} point penalty for misalignment."
+                    must = human_context_mismatch_paragraph(
+                        lecture_context or "",
+                        transcript_excerpt or "",
+                        float(pen or content_penalty_points or 5),
                     )
                     pf = (summary.get("personalized_feedback") or "").strip()
-                    if must.lower() not in pf.lower():
+                    if "in our context-aware analysis" not in pf.lower():
                         # Insert after the first sentence of paragraph 1 if possible.
                         parts = pf.split("\n\n")
                         if parts:
@@ -1464,16 +1470,15 @@ FORCE_FULL MODE:
             )
             # Evidence-based + Context-aware injection even for fallback summaries.
             try:
-                if has_user_context and str(context_alignment_verdict or "").lower().strip() == "mismatch":
-                    ev1 = (transcript_excerpt or "").replace("\n", " ").strip()
-                    ev1 = ev1[:160]
-                    note = (
-                        f" Context-Aware Analysis: the submitted lecture context appears mismatched with the transcript excerpt "
-                        f"(alignment score {context_alignment_score if context_alignment_score is not None else '—'}). "
-                        f"Content includes a −{int(round(float(content_penalty_points or 5)))} point penalty for misalignment."
-                        + (f" Evidence cue: \"{ev1}\"." if ev1 else "")
+                vfb = str(context_alignment_verdict or "").lower().strip()
+                pfb = float(content_penalty_points or 0)
+                if has_user_context and (vfb == "mismatch" or pfb >= 4.9):
+                    note = " " + human_context_mismatch_paragraph(
+                        lecture_context or "",
+                        transcript_excerpt or "",
+                        float(content_penalty_points or 5),
                     )
-                    if note.lower() not in fb_p1.lower():
+                    if "in our context-aware analysis" not in fb_p1.lower():
                         fb_p1 = (fb_p1 + note).strip()
             except Exception:
                 pass
