@@ -4151,9 +4151,21 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     'content': round(mars_content_score, 2),
                     'delivery': round(mars_delivery_score, 2),
                     'engagement': round(mars_engagement_score, 2),
-                    'formula': '0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                    'formula': (
+                        'MARS: 0.20×(Content_rubric − Penalty) + 0.40×Delivery + 0.40×Engagement'
+                        if _pen_pts >= 0.01
+                        else 'MARS: 0.20×Content + 0.40×Delivery + 0.40×Engagement'
+                    ),
                     'expanded': (
-                        f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
+                        (
+                            f"0.20×({round(_cbefore, 2)} − {int(round(_pen_pts))}) + 0.40×{round(mars_delivery_score, 2)} "
+                            f"+ 0.40×{round(mars_engagement_score, 2)} "
+                            f"(= 0.20×{round(mars_content_score, 2)} + 0.40×{round(mars_delivery_score, 2)} + 0.40×{round(mars_engagement_score, 2)})"
+                        )
+                        if _pen_pts >= 0.01
+                        else (
+                            f"0.20×{round(mars_content_score, 2)} + 0.40×{round(mars_delivery_score, 2)} + 0.40×{round(mars_engagement_score, 2)}"
+                        )
                     ),
                     'content_adjustment': _content_adjustment,
                 },
@@ -4195,15 +4207,27 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                     }
                 },
                 'final_calculation': {
-                    'formula': 'MARS: 0.20×Content + 0.40×Delivery + 0.40×Engagement',
+                    'formula': (
+                        'MARS: 0.20×(Content_rubric − Penalty) + 0.40×Delivery + 0.40×Engagement'
+                        if _pen_pts >= 0.01
+                        else 'MARS: 0.20×Content + 0.40×Delivery + 0.40×Engagement'
+                    ),
                     'content_adjustment': _content_adjustment,
                     'calculation': (
-                        f"0.20×{round(mars_content_score,2)} + 0.40×{round(mars_delivery_score,2)} + 0.40×{round(mars_engagement_score,2)}"
+                        (
+                            f"0.20×({round(_cbefore, 2)} − {int(round(_pen_pts))}) + 0.40×{round(mars_delivery_score, 2)} "
+                            f"+ 0.40×{round(mars_engagement_score, 2)} "
+                            f"= 0.20×{round(mars_content_score, 2)} + 0.40×{round(mars_delivery_score, 2)} + 0.40×{round(mars_engagement_score, 2)}"
+                        )
+                        if _pen_pts >= 0.01
+                        else (
+                            f"0.20×{round(mars_content_score, 2)} + 0.40×{round(mars_delivery_score, 2)} + 0.40×{round(mars_engagement_score, 2)}"
+                        )
                     ),
                     'calculation_note': (
                         (
-                            f"Content entering the formula is {round(mars_content_score, 2)}/10 after applying the "
-                            f"Context-Aware penalty (−{int(round(_pen_pts))} from {round(_cbefore, 2)}/10)."
+                            f"Penalty is applied inside Content before the 20% weight: Content_used = max(0, Content_rubric − Penalty). "
+                            f"Here Content_rubric was {round(_cbefore, 2)}/10, Penalty −{int(round(_pen_pts))}, so Content_used = {round(mars_content_score, 2)}/10."
                         )
                         if _pen_pts >= 0.01
                         else None
