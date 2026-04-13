@@ -138,7 +138,11 @@ def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str,
         context_provided = bool(pedagogical_analysis.get("lecture_context_provided"))
         alignment = pedagogical_analysis.get("context_alignment_score", None)
         alignment = float(alignment) if alignment is not None else None
-        if context_provided and alignment is not None and alignment <= 0.25:
+        verdict = str(pedagogical_analysis.get("context_alignment_verdict") or "").lower().strip()
+        mismatch = (verdict == "mismatch")
+        # Apply penalty when the system judges a topical mismatch (verdict) OR when the numeric alignment is very low.
+        # This avoids edge cases where the aligner labels mismatch but returns a borderline score like 0.30.
+        if context_provided and (mismatch or (alignment is not None and alignment <= 0.25)):
             penalty_points = 5.0
     except Exception:
         penalty_points = 0.0
@@ -156,7 +160,7 @@ def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str,
             "Org = (0.1×SS + 0.1×LC + 0.1×CF) / 0.3; "
             "Expl = (0.2×CA + 0.1×CR + 0.1×MP) / 0.4; "
             "Ex = (0.1×Eq + 0.1×An + 0.1×Rd) / 0.3; "
-            "If context provided and alignment≤0.25: Content = max(0, Content − 5)"
+            "If context provided and (verdict=mismatch OR alignment≤0.25): Content = max(0, Content − 5)"
         ),
     }
 
