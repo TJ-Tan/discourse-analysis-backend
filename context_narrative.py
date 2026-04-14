@@ -46,6 +46,7 @@ def human_context_mismatch_paragraph(
     pen = int(round(float(penalty_points or 0)))
     if pen <= 0:
         pen = 5
+    pen_marks = int(round(pen * 10))
 
     ctx_tags = _theme_tags(lc)
     txt_tags = _theme_tags(tex)
@@ -92,11 +93,11 @@ def human_context_mismatch_paragraph(
     lead = openings[h % len(openings)]
 
     closings = (
-        f"Because of this mismatch, the Content score was reduced by −{pen} point(s) after rubric scoring "
+        f"Because of this mismatch, the Content score was reduced by −{pen_marks} mark(s) after rubric scoring "
         f"(see the scoring breakdown for the figures used in the overall MARS calculation).",
-        f"Given that gap, the Content score was adjusted by −{pen} point(s) after rubric scoring "
+        f"Given that gap, the Content score was adjusted by −{pen_marks} mark(s) after rubric scoring "
         f"(the breakdown shows how this feeds the overall MARS figure).",
-        f"That misalignment triggered a −{pen} Content adjustment after rubric scoring "
+        f"That misalignment triggered a −{pen_marks} Content adjustment after rubric scoring "
         f"(see the score breakdown for how it combines with the other pillars).",
     )
     tail = closings[(h // 7) % len(closings)]

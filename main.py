@@ -1291,7 +1291,7 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
 
         # Precompute strings with newlines — nested f-strings cannot use \\n inside {...} on Python < 3.12 (Railway).
         weaker_tail = (
-            f", {weakest_categories[1][0]} ({weakest_categories[1][1]}/10)"
+            f", {weakest_categories[1][0]} ({weakest_categories[1][1]*10:.1f}/100)"
             if len(weakest_categories) > 1
             else ""
         )
@@ -1315,14 +1315,15 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
 
         raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
-Scores: Overall {overall_score}/10 | Content {content_score}/10 | Delivery {delivery_score}/10 | Engagement {engagement_score}/10
-Speech {speech_score}/10 | Body {body_language_score}/10 | Interaction block {interaction_score}/10
-Strongest block: {strongest_category[0]} ({strongest_category[1]}/10)
-Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]}/10){weaker_tail}
+SCORES (displayed on /100; internal pillar scales are /10):
+Overall {overall_score*10:.1f}/100 | Content {content_score*10:.1f}/100 | Delivery {delivery_score*10:.1f}/100 | Engagement {engagement_score*10:.1f}/100
+Speech {speech_score*10:.1f}/100 | Body {body_language_score*10:.1f}/100 | Interaction block {interaction_score*10:.1f}/100
+Strongest block: {strongest_category[0]} ({strongest_category[1]*10:.1f}/100)
+Weaker: {weakest_categories[0][0]} ({weakest_categories[0][1]*10:.1f}/100){weaker_tail}
 
 Context-aware analysis signals (do not ignore):
 Context alignment verdict: {context_alignment_verdict} | alignment_score: {context_alignment_score}
-Content penalty (if context mismatch): -{content_penalty_points} point(s)
+Content penalty (if context mismatch): -{int(round(float(content_penalty_points or 0) * 10))} mark(s) (equivalent to -{content_penalty_points} on the internal /10 scale)
 
 LECTURE CONTEXT (instructor-supplied; use with transcript excerpt below):
 {lecture_context_wrapped}
@@ -1366,7 +1367,7 @@ Return JSON only with keys:
   • If lecture context was submitted: 1–2 sentences comparing that context (module, topic, ILOs, audience) to themes and terminology visible in the transcript excerpt. State whether delivery appears aligned, partially aligned, or off-focus/mixed, citing brief paraphrase or topic cues from the transcript (do not invent module codes).
   • If NO context was submitted: exactly one clear sentence, e.g. that no lecture context was provided (module, intended learning outcomes, etc.), so stated-versus-delivered alignment cannot be evaluated from the inputs.
   FORBIDDEN here: phrases like "interpretation should", "should explicitly consider", "reviewers should", or any instruction telling someone how to interpret — only state findings.
-  • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: in plain language (no "alignment score 0.00" jargon), say what the instructor claimed vs what the transcript suggests (e.g. topic or discipline mismatch), quote a short transcript cue, and state that Content was penalised by 5 points for misalignment.
+  • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: in plain language (no "alignment score 0.00" jargon), say what the instructor claimed vs what the transcript suggests (e.g. topic or discipline mismatch), quote a short transcript cue, and state that Content was penalised by 50 marks for misalignment (i.e. −5 on the internal /10 scale).
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
 - lecture_thumbprint: exactly 3 short strings in a JSON array. Each must name something concrete from LECTURE-SPECIFIC GROUNDING or evidence snippets (opening line, salient term, first question, or context first line). Ban lines that could apply unchanged to any recording (e.g. "the instructor explained clearly" with no topic).
@@ -1454,8 +1455,8 @@ FORCE_FULL MODE:
             )
         ).hexdigest()[:12]
         narrative_user = (
-            f"Layer 2 — score reminder: Overall {overall_score}/10, Content {content_score}/10, "
-            f"Delivery {delivery_score}/10, Engagement {engagement_score}/10.\n"
+            f"Layer 2 — score reminder (use /100 in your writing): Overall {overall_score*10:.1f}/100, Content {content_score*10:.1f}/100, "
+            f"Delivery {delivery_score*10:.1f}/100, Engagement {engagement_score*10:.1f}/100.\n"
             f"DIVERSITY_HINT (vary rhythm and vocabulary vs other lectures; do not print this label): {diversity_seed}\n\n"
             f"LECTURE-SPECIFIC GROUNDING (must shape opening and at least one other paragraph; do not paste as a bullet list):\n"
             f"{lecture_thumbprint_grounding}\n\n"
@@ -1488,13 +1489,13 @@ FORCE_FULL MODE:
             elif not (summary.get("personalized_feedback") or "").strip():
                 if total_questions == 0:
                     summary["personalized_feedback"] = (
-                        f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
+                        f"MARS Evaluated Final Score {overall_score*10:.1f}/100 (Content {content_score*10:.1f}/100, Delivery {delivery_score*10:.1f}/100, Engagement {engagement_score*10:.1f}/100). "
                         f"No instructor questions were detected in the transcript; interpret engagement scores with caution. "
-                        f"Strongest MARS block: {strongest_category[0]} ({strongest_category[1]}/10)."
+                        f"Strongest MARS block: {strongest_category[0]} ({strongest_category[1]*10:.1f}/100)."
                     )
                 else:
                     summary["personalized_feedback"] = (
-                        f"MARS Evaluated Final Score {overall_score}/10 (Content {content_score}/10, Delivery {delivery_score}/10, Engagement {engagement_score}/10). "
+                        f"MARS Evaluated Final Score {overall_score*10:.1f}/100 (Content {content_score*10:.1f}/100, Delivery {delivery_score*10:.1f}/100, Engagement {engagement_score*10:.1f}/100). "
                         f"The session included {total_questions} instructor question(s) (see rubric breakdown for wording and CLI)."
                     )
 
@@ -1546,8 +1547,8 @@ FORCE_FULL MODE:
             elif g_line:
                 rubric_extra = f" Suggested development priorities include {g_line.lower()}."
             fb_p1 = (
-                f"Overall, this session receives a MARS score of {overall_score}/10, with Content at {content_score}/10, "
-                f"Delivery at {delivery_score}/10, and Engagement at {engagement_score}/10. Taken together, the profile suggests "
+                f"Overall, this session receives a MARS score of {overall_score*10:.1f}/100, with Content at {content_score*10:.1f}/100, "
+                f"Delivery at {delivery_score*10:.1f}/100, and Engagement at {engagement_score*10:.1f}/100. Taken together, the profile suggests "
                 f"relatively stronger performance in {strongest_category[0].lower()} and comparatively more room to strengthen "
                 f"{weakest_categories[0][0].lower()} if the goal is active, visible learning in the room or in follow-up tasks. "
                 f"{q_note}{ctx_sent}{rubric_extra}"
@@ -1576,25 +1577,25 @@ FORCE_FULL MODE:
                 fb_p2 = (
                     f"From the opening stretch of the transcript ({tex_hook[:120]}{'…' if len(tex_hook) > 120 else ''}), "
                     f"the work clusters around ideas such as {t0} and {t1}. That helps explain why {strongest_category[0].lower()} "
-                    f"registers highest here ({strongest_category[1]}/10): students have concrete anchors while you develop the explanation."
+                    f"registers highest here ({strongest_category[1]*10:.1f}/100): students have concrete anchors while you develop the explanation."
                 )
             else:
                 fb_p2 = (
                     f"Across the sampled transcript, recurring cues around {t0} give {strongest_category[0].lower()} "
-                    f"room to land ({strongest_category[1]}/10), even where the excerpt is thin."
+                    f"room to land ({strongest_category[1]*10:.1f}/100), even where the excerpt is thin."
                 )
             fq_fb = first_question_hook.replace('"', "'")
             if len(fq_fb) > 160:
                 fq_fb = fq_fb[:157] + "…"
             if fq_fb:
                 fb_p3 = (
-                    f"For {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10), try tightening the arc after prompts like "
+                    f"For {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]*10:.1f}/100), try tightening the arc after prompts like "
                     f"‘{fq_fb}’—add a follow-up that names the reasoning step you want audible, then pause for a short student response "
                     f"before you advance. Webcast audio often under-counts audience talk, so brief think–pair–share or chat prompts can surface uptake."
                 )
             else:
                 fb_p3 = (
-                    f"To lift {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10), add a few higher‑leverage prompts tied to "
+                    f"To lift {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]*10:.1f}/100), add a few higher‑leverage prompts tied to "
                     f"{t0}: ask for a worked example, a counter‑example, or a one‑sentence summary before you move on—then use the answer to steer the next segment. "
                     f"Webcast audio often under-represents audience contributions."
                 )
