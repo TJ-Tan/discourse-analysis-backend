@@ -4,6 +4,7 @@ Instructor-facing copy for lecture-context vs transcript alignment (no raw align
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Set
 
@@ -82,8 +83,22 @@ def human_context_mismatch_paragraph(
 
     ev = f' Evidence includes: "{quote}".' if quote else ""
 
-    return (
-        f"In our Context-Aware Analysis, we found that {mismatch}.{ev} "
-        f"Because of this mismatch, the Content score was reduced by −{pen} point(s) after rubric scoring "
-        f"(see the scoring breakdown for the figures used in the overall MARS calculation)."
+    h = int(hashlib.sha256(f"{lc}|{tex}".encode("utf-8", errors="ignore")).hexdigest()[:8], 16)
+    openings = (
+        f"In our Context-Aware Analysis, we found that {mismatch}.",
+        f"In our Context-Aware Analysis, the clearest signal is that {mismatch}.",
+        f"Our Context-Aware Analysis highlights that {mismatch}.",
     )
+    lead = openings[h % len(openings)]
+
+    closings = (
+        f"Because of this mismatch, the Content score was reduced by −{pen} point(s) after rubric scoring "
+        f"(see the scoring breakdown for the figures used in the overall MARS calculation).",
+        f"Given that gap, the Content score was adjusted by −{pen} point(s) after rubric scoring "
+        f"(the breakdown shows how this feeds the overall MARS figure).",
+        f"That misalignment triggered a −{pen} Content adjustment after rubric scoring "
+        f"(see the score breakdown for how it combines with the other pillars).",
+    )
+    tail = closings[(h // 7) % len(closings)]
+
+    return f"{lead}{ev} {tail}"

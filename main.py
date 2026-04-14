@@ -12,6 +12,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import json
 import re
+import hashlib
 
 # Load environment variables
 load_dotenv()
@@ -82,6 +83,54 @@ def _english_list_phrases(items: List[str]) -> str:
     if len(xs) == 2:
         return f"{xs[0]} and {xs[1]}"
     return ", ".join(xs[:-1]) + f", and {xs[-1]}"
+
+
+def _salient_terms(text: str, limit: int = 14) -> List[str]:
+    """Short topical tokens from transcript excerpt (deterministic; for prompting only)."""
+    stop = {
+        "about", "after", "again", "before", "being", "could", "every", "first", "going", "hello", "right", "there",
+        "these", "those", "where", "which", "would", "your", "their", "today", "tomorrow", "really", "actually",
+        "lecture", "session", "course", "module", "topic", "students", "student", "learning",
+    }
+    words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9-]{4,}\b", (text or "").lower())
+    out: List[str] = []
+    for w in words:
+        if w in stop:
+            continue
+        if w not in out:
+            out.append(w)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _lecture_thumbprint_block(transcript_excerpt: str, lecture_context: str, first_question: str = "") -> str:
+    """Concrete, per-recording anchors so summaries cannot collapse into generic boilerplate."""
+    lines: List[str] = []
+    lc = (lecture_context or "").strip()
+    if lc:
+        lead = lc.split("\n", 1)[0].strip()
+        if len(lead) > 220:
+            lead = lead[:217] + "…"
+        lines.append(f"- Stated context (first line): {lead}")
+    tex = (transcript_excerpt or "").strip()
+    if tex:
+        first_sent = (tex.split(".")[0] or tex).strip()
+        if len(first_sent) > 260:
+            first_sent = first_sent[:257] + "…"
+        lines.append(f'- Transcript opening (topic/tone): "{first_sent}"')
+    terms = _salient_terms(tex[:2200], 14)
+    if terms:
+        lines.append(
+            "- Salient excerpt terms (weave 3–5 naturally; do not dump them as a comma-list sentence): "
+            + ", ".join(terms)
+        )
+    fq = (first_question or "").strip()
+    if fq:
+        if len(fq) > 220:
+            fq = fq[:217] + "…"
+        lines.append(f'- First detected instructor question (trimmed): "{fq}"')
+    return "\n".join(lines) if lines else "- (No transcript excerpt or context supplied for grounding.)"
 
 
 def _questioning_blurb(total_questions: int) -> str:
@@ -1252,6 +1301,18 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
             else "---\n(none submitted — no module/topic/ILOs text was provided for this recording)\n---"
         )
 
+        first_question_hook = ""
+        if qsrc and len(qsrc) > 0:
+            fq0 = str(qsrc[0].get("question") or qsrc[0].get("text") or "").strip()
+            if fq0:
+                first_question_hook = fq0
+
+        lecture_thumbprint_grounding = _lecture_thumbprint_block(
+            transcript_excerpt or "",
+            lecture_context or "",
+            first_question_hook,
+        )
+
         raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
 Scores: Overall {overall_score}/10 | Content {content_score}/10 | Delivery {delivery_score}/10 | Engagement {engagement_score}/10
@@ -1285,6 +1346,11 @@ Rubric snippets (integrate meaning, do not paste as a list in final prose):
 {extra_merge if extra_merge.strip() else '(none)'}
 
 Rules: {zero_q_rule}"""
+        raw_facts += f"""
+
+LECTURE-SPECIFIC GROUNDING (facts only; Layer 1 & 2 must anchor specificity here — do not invent beyond transcript/context):
+{lecture_thumbprint_grounding}
+"""
 
         interpretation_system = """You are Layer 1 — Structured interpretation for MARS (no final instructor-facing essay).
 
@@ -1303,6 +1369,7 @@ Return JSON only with keys:
   • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: in plain language (no "alignment score 0.00" jargon), say what the instructor claimed vs what the transcript suggests (e.g. topic or discipline mismatch), quote a short transcript cue, and state that Content was penalised by 5 points for misalignment.
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
+- lecture_thumbprint: exactly 3 short strings in a JSON array. Each must name something concrete from LECTURE-SPECIFIC GROUNDING or evidence snippets (opening line, salient term, first question, or context first line). Ban lines that could apply unchanged to any recording (e.g. "the instructor explained clearly" with no topic).
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
 
         narrative_system = """You are Layer 2 — Narrative generator for higher-education instructor feedback (faculty-development style).
@@ -1312,6 +1379,11 @@ Input: JSON from Layer 1 (interpretation) only, plus a one-line score reminder. 
 Voice: insightful, constructive, academically professional — like an experienced teaching consultant. Prefer synthesis over inventory.
 
 Tone: professional, warm, precise. Reframe limitations as opportunities. Avoid blunt negative words ("poor", "weak", "bad").
+
+LECTURE SPECIFICITY (critical — avoids generic boilerplate):
+- Open paragraph_overall with a concrete hook (topic, task, or moment) drawn only from Layer 1 lecture_thumbprint, context_alignment, or the evidence snippets — not a template opener. The first sentence must include at least one distinctive cue (term, question stem, or paraphrased opening move) from this recording.
+- Do not start two paragraphs with the same construction (e.g. both "Overall, …" or both "In this session, …").
+- Ban these stock phrases anywhere: "paints a picture", "clear strength lies in", "most productive next step", "relatively stronger performance", "intellectual thread" (unless quoting), "session's purpose" (unless tied to named content from inputs).
 
 STRICT PROHIBITIONS:
 - Do NOT paste ICAP counts as "Passive X, Active Y" or similar.
@@ -1368,13 +1440,25 @@ FORCE_FULL MODE:
             json.dumps(interp_json, ensure_ascii=False)
             if interp_json
             else json.dumps(
-                {"note": "Layer 1 failed; use raw facts below.", "raw_facts_excerpt": raw_facts[:3500]},
+                {
+                    "note": "Layer 1 failed; use raw facts excerpt and lecture grounding below.",
+                    "raw_facts_excerpt": raw_facts[:3500],
+                    "lecture_thumbprint_grounding": lecture_thumbprint_grounding,
+                },
                 ensure_ascii=False,
             )
         )
+        diversity_seed = hashlib.sha256(
+            f"{lecture_context}|{len(transcript_excerpt or '')}|{overall_score}|{(transcript_excerpt or '')[:700]}".encode(
+                "utf-8", errors="ignore"
+            )
+        ).hexdigest()[:12]
         narrative_user = (
             f"Layer 2 — score reminder: Overall {overall_score}/10, Content {content_score}/10, "
-            f"Delivery {delivery_score}/10, Engagement {engagement_score}/10.\n\n"
+            f"Delivery {delivery_score}/10, Engagement {engagement_score}/10.\n"
+            f"DIVERSITY_HINT (vary rhythm and vocabulary vs other lectures; do not print this label): {diversity_seed}\n\n"
+            f"LECTURE-SPECIFIC GROUNDING (must shape opening and at least one other paragraph; do not paste as a bullet list):\n"
+            f"{lecture_thumbprint_grounding}\n\n"
             f"Layer 1 interpretation (use as sole evidence base for nuance; do not invent facts):\n{interp_blob}\n\n"
             "Produce paragraph_overall, paragraph_strengths, paragraph_growth."
         )
@@ -1430,7 +1514,7 @@ FORCE_FULL MODE:
                         float(pen or content_penalty_points or 5),
                     )
                     pf = (summary.get("personalized_feedback") or "").strip()
-                    if "in our context-aware analysis" not in pf.lower():
+                    if "context-aware analysis" not in pf.lower():
                         # Insert after the first sentence of paragraph 1 if possible.
                         parts = pf.split("\n\n")
                         if parts:
@@ -1478,20 +1562,42 @@ FORCE_FULL MODE:
                         transcript_excerpt or "",
                         float(content_penalty_points or 5),
                     )
-                    if "in our context-aware analysis" not in fb_p1.lower():
+                    if "context-aware analysis" not in fb_p1.lower():
                         fb_p1 = (fb_p1 + note).strip()
             except Exception:
                 pass
-            fb_p2 = (
-                f"A clear strength lies in {strongest_category[0].lower()} (about {strongest_category[1]}/10 on this block). "
-                f"When this dimension is strong, learners are more likely to follow the intellectual thread, make sense of key ideas, "
-                f"and stay oriented to the session’s purpose—especially when explanations are accurate and delivery remains intelligible."
-            )
-            fb_p3 = (
-                f"The most productive next step is to further strengthen {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10). "
-                f"That may include designing more opportunities for sustained dialogue, varied cognitive prompts, and facilitation moves that make "
-                f"learner thinking visible—recognising that webcast audio often under-represents audience contributions."
-            )
+            tex_hook = (transcript_excerpt or "").strip().replace("\n", " ")
+            if len(tex_hook) > 220:
+                tex_hook = tex_hook[:217] + "…"
+            sal = _salient_terms(transcript_excerpt or "", 8)
+            t0 = sal[0] if sal else "the material you foreground"
+            t1 = sal[1] if len(sal) > 1 else t0
+            if tex_hook:
+                fb_p2 = (
+                    f"From the opening stretch of the transcript ({tex_hook[:120]}{'…' if len(tex_hook) > 120 else ''}), "
+                    f"the work clusters around ideas such as {t0} and {t1}. That helps explain why {strongest_category[0].lower()} "
+                    f"registers highest here ({strongest_category[1]}/10): students have concrete anchors while you develop the explanation."
+                )
+            else:
+                fb_p2 = (
+                    f"Across the sampled transcript, recurring cues around {t0} give {strongest_category[0].lower()} "
+                    f"room to land ({strongest_category[1]}/10), even where the excerpt is thin."
+                )
+            fq_fb = first_question_hook.replace('"', "'")
+            if len(fq_fb) > 160:
+                fq_fb = fq_fb[:157] + "…"
+            if fq_fb:
+                fb_p3 = (
+                    f"For {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10), try tightening the arc after prompts like "
+                    f"‘{fq_fb}’—add a follow-up that names the reasoning step you want audible, then pause for a short student response "
+                    f"before you advance. Webcast audio often under-counts audience talk, so brief think–pair–share or chat prompts can surface uptake."
+                )
+            else:
+                fb_p3 = (
+                    f"To lift {weakest_categories[0][0].lower()} (about {weakest_categories[0][1]}/10), add a few higher‑leverage prompts tied to "
+                    f"{t0}: ask for a worked example, a counter‑example, or a one‑sentence summary before you move on—then use the answer to steer the next segment. "
+                    f"Webcast audio often under-represents audience contributions."
+                )
             fallback_summary = {
                 "personalized_feedback": f"{fb_p1}\n\n{fb_p2}\n\n{fb_p3}",
                 "strongest_strength": None,
