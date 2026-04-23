@@ -3737,24 +3737,62 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         """
         Enhanced analysis combination with detailed breakdown and transparency
         """
-        # Calculate enhanced component scores
-        speech_score = self.calculate_speech_score_enhanced(speech_analysis)
-        visual_score = self.calculate_visual_score_enhanced(visual_analysis)
-        pedagogy_score = self.calculate_pedagogy_score_enhanced(pedagogical_analysis)
-
-        def _sf(x, default: float) -> float:
-            if x is None:
-                return float(default)
+        def _require_number(label: str, value: Any, context: str) -> float:
+            """
+            Fail fast with a user-readable error when a required numeric score is missing.
+            We do NOT silently default here because that hides upstream failures.
+            """
+            if value is None:
+                raise RuntimeError(f"{context}: {label} is missing (None).")
             try:
-                return float(x)
+                v = float(value)
             except (TypeError, ValueError):
-                return float(default)
+                raise RuntimeError(f"{context}: {label} is not a number (got {type(value).__name__}).")
+            if v != v:  # NaN check
+                raise RuntimeError(f"{context}: {label} is NaN.")
+            return v
 
-        # Defensive coercion: some upstream steps may return None on partial failures.
-        speech_score = _sf(speech_score, 7.0)
-        visual_score = _sf(visual_score, 7.0)
-        pedagogy_score = _sf(pedagogy_score, 7.0)
-        interaction_score = _sf((interaction_analysis or {}).get('score', 7.0), 7.0)
+        # Guard upstream partial failures with precise explanations.
+        if not isinstance(speech_analysis, dict):
+            raise RuntimeError(
+                f"Score combination failed: speech_analysis is not a dict (got {type(speech_analysis).__name__}). "
+                "This usually means the transcription step did not return a valid payload."
+            )
+        if not isinstance(visual_analysis, dict):
+            raise RuntimeError(
+                f"Score combination failed: visual_analysis is not a dict (got {type(visual_analysis).__name__}). "
+                "This usually means the frame/vision step did not return a valid payload."
+            )
+        if not isinstance(pedagogical_analysis, dict):
+            raise RuntimeError(
+                f"Score combination failed: pedagogical_analysis is not a dict (got {type(pedagogical_analysis).__name__}). "
+                "This usually means the pedagogy/content analysis step did not return a valid payload."
+            )
+        if not isinstance(interaction_analysis, dict):
+            raise RuntimeError(
+                f"Score combination failed: interaction_analysis is not a dict (got {type(interaction_analysis).__name__}). "
+                "This usually means the questioning/interaction step did not return a valid payload."
+            )
+
+        # If visual analysis explicitly reports an error, fail with that reason instead of a generic None-type crash.
+        if visual_analysis.get("error"):
+            raise RuntimeError(
+                "Visual analysis did not produce usable scores. "
+                f"Reason: {visual_analysis.get('error')}. "
+                "Common causes: the video produced no readable frames (decode failure), or the vision model call failed for all sampled frames "
+                "(rate limit, API key/config issue, or transient provider error)."
+            )
+        if not isinstance(visual_analysis.get("scores"), dict) or not visual_analysis.get("scores"):
+            raise RuntimeError(
+                "Visual analysis did not return a 'scores' object. "
+                "This indicates a partial upstream failure during frame scoring (vision)."
+            )
+
+        # Calculate enhanced component scores (must be numeric)
+        speech_score = _require_number("speech_score", self.calculate_speech_score_enhanced(speech_analysis), "Score combination failed")
+        visual_score = _require_number("visual_score", self.calculate_visual_score_enhanced(visual_analysis), "Score combination failed")
+        pedagogy_score = _require_number("pedagogy_score", self.calculate_pedagogy_score_enhanced(pedagogical_analysis), "Score combination failed")
+        interaction_score = _require_number("interaction_score", interaction_analysis.get("score", None), "Score combination failed")
 
         presentation_score = (speech_score + visual_score) / 2.0
         
