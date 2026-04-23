@@ -3741,8 +3741,22 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
         speech_score = self.calculate_speech_score_enhanced(speech_analysis)
         visual_score = self.calculate_visual_score_enhanced(visual_analysis)
         pedagogy_score = self.calculate_pedagogy_score_enhanced(pedagogical_analysis)
-        interaction_score = interaction_analysis.get('score', 7.0)
-        presentation_score = (speech_score + visual_score) / 2
+
+        def _sf(x, default: float) -> float:
+            if x is None:
+                return float(default)
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return float(default)
+
+        # Defensive coercion: some upstream steps may return None on partial failures.
+        speech_score = _sf(speech_score, 7.0)
+        visual_score = _sf(visual_score, 7.0)
+        pedagogy_score = _sf(pedagogy_score, 7.0)
+        interaction_score = _sf((interaction_analysis or {}).get('score', 7.0), 7.0)
+
+        presentation_score = (speech_score + visual_score) / 2.0
         
         # Get category weights from config
         category_weights = ANALYSIS_CONFIG["weights"]
