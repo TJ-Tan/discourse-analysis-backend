@@ -1775,6 +1775,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         messages: List[Dict[str, str]],
         max_completion_tokens: int,
         prefer_json_object_format: bool = False,
+        reasoning_effort: Optional[str] = None,
     ):
         """Chat completion; optionally request JSON mode, with one fallback if the API rejects it."""
         kwargs: Dict[str, Any] = {
@@ -1784,12 +1785,23 @@ Return only the processed transcript with proper punctuation and sentence segmen
         }
         if prefer_json_object_format:
             kwargs["response_format"] = {"type": "json_object"}
-            try:
-                return openai_client.chat.completions.create(**kwargs)
-            except Exception:
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+        try:
+            return openai_client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # Older SDKs / models may reject reasoning_effort or json_object.
+            dropped = False
+            if "reasoning_effort" in kwargs:
+                kwargs.pop("reasoning_effort", None)
+                dropped = True
+            if prefer_json_object_format and "response_format" in kwargs:
                 kwargs.pop("response_format", None)
+                dropped = True
+            if dropped:
+                logger.warning("Retrying chat completion without optional params: %s", e)
                 return openai_client.chat.completions.create(**kwargs)
-        return openai_client.chat.completions.create(**kwargs)
+            raise
 
     MARS_CONTENT_CRITERIA_KEYS = (
         "structural_sequencing",
@@ -1835,7 +1847,18 @@ Return only the processed transcript with proper punctuation and sentence segmen
         refusal = getattr(msg, "refusal", None)
         if refusal:
             raise ValueError(f"model refusal: {refusal}")
-        raise ValueError(f"AI response content is None or empty (finish_reason={finish})")
+        usage = getattr(response, "usage", None)
+        usage_bits = ""
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            reasoning_toks = getattr(details, "reasoning_tokens", None) if details is not None else None
+            usage_bits = (
+                f" completion_tokens={getattr(usage, 'completion_tokens', None)}"
+                f" reasoning_tokens={reasoning_toks}"
+            )
+        raise ValueError(
+            f"AI response content is None or empty (finish_reason={finish}{usage_bits})"
+        )
 
     def _coerce_score_0_10(self, value: Any, key: str) -> float:
         """Normalise LLM scores to 0–10 (accepts 0–100, '7/10', nested {score: n})."""
@@ -2249,7 +2272,9 @@ Return JSON only:
                 "understand the lecture (organisation, explanation, examples)."
             )
 
-        transcript_for_llm = self._transcript_for_content_llm(transcript)
+        # Compact excerpt: gpt-5-nano spends completion tokens on reasoning; a huge prompt
+        # plus long evidence JSON commonly hits finish_reason=length with empty content.
+        transcript_for_llm = self._transcript_for_content_llm(transcript, max_chars=14000)
         lc_block = (
             f"INSTRUCTOR-PROVIDED LECTURE CONTEXT (what this session is supposed to teach):\n{lc}\n"
             if lc
@@ -2261,75 +2286,52 @@ Return JSON only:
 Score the Content pillar from that learner's perspective: after listening, how well could you understand,
 follow, and mentally organise the material?
 
-Do NOT score delivery (voice, fillers, camera, gestures). Those are a different pillar.
+Do NOT score delivery (voice, fillers, camera, gestures).
 Do NOT give every criterion the same number. Use the full 0–10 scale. Never use 5 as a "don't know" placeholder —
-if evidence is thin, score low (1–4) and say so in evidence; if the lecture clearly helps students, score high (8–10).
+if evidence is thin, score low (1–4); if the lecture clearly helps students, score high (8–10).
 
-Rubric bands (0–10):
-- 9–10 Excellent: a typical student could follow and learn with low cognitive load.
-- 7.5–8.9 Good: mostly clear; some gaps a student would still notice.
-- 6.0–7.4 Average: followable, but connections, why/how, or examples are easy to miss.
-- 4.0–5.9 Below average: a student would struggle to build a reliable mental model.
-- 0–3.9 Poor: a student would leave confused or unable to relate to the content.
+Bands: 9–10 excellent; 7.5–8.9 good; 6.0–7.4 average; 4.0–5.9 below average; 0–3.9 poor.
 
-Nine criteria (score each independently):
+Nine criteria:
+1.1 structural_sequencing, logical_consistency, closure_framing
+1.2 conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
+1.3 example_quality_frequency, analogy_concept_bridging, representation_diversity
 
-1.1 Content Organisation
-- structural_sequencing: Did ideas build from foundations to complexity, with signposting a student can follow?
-- logical_consistency: Did claims fit together without contradictions a student would notice?
-- closure_framing: Were objectives, recaps, or takeaways enough for a student to know what mattered?
+If lecture context is provided and the talk is a different subject, score LOW (1–4) on all nine.
 
-1.2 Explanation Quality
-- conceptual_accuracy: Were terms and relationships used in a way a student could trust (vs vague or muddled)?
-- causal_reasoning_depth: Did the lecturer explain WHY/HOW, not only WHAT? Could a student retell the mechanism?
-- multi_perspective_explanation: Were there alternative angles, comparisons, or "another way to see it"?
+CRITICAL OUTPUT RULES:
+- Return ONE JSON object of NUMBERS only.
+- No evidence strings, no arrays, no markdown, no commentary.
+- Every value must be a number from 0 to 10."""
 
-1.3 Use of Examples / Representation
-- example_quality_frequency: Enough concrete examples that a student could apply the idea?
-- analogy_concept_bridging: Analogies or links to prior knowledge that actually help a novice?
-- representation_diversity: Verbal plus other forms a student hears (equations, diagrams, steps, cases)?
-
-Context alignment: if lecture context is provided and the talk is largely a different subject, score LOW (typically 1–4)
-on all nine — a student in that course would not have learned the intended content. Do not reward a clear lecture on the wrong topic.
-
-Return JSON only. Keep evidence_* to ONE short sentence each with a concrete cue from the lecture."""
-
+        score_keys = (
+            list(self.MARS_CONTENT_CRITERIA_KEYS) + list(self.MARS_CONTENT_LEGACY_KEYS)
+        )
         user_pedagogy = f"""{lc_block}
 
-LECTURE TRANSCRIPT (judge the whole arc: opening, development, close):
+LECTURE TRANSCRIPT (opening, middle, close):
 {transcript_for_llm}
 
-Return ONE JSON object with numeric scores 0–10 (decimals allowed) for ALL of these keys:
-structural_sequencing, logical_consistency, closure_framing,
-conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation,
-example_quality_frequency, analogy_concept_bridging, representation_diversity,
-content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
-evidence_structural_sequencing, evidence_logical_consistency, evidence_closure_framing,
-evidence_conceptual_accuracy, evidence_causal_reasoning_depth, evidence_multi_perspective_explanation,
-evidence_example_quality_frequency, evidence_analogy_concept_bridging, evidence_representation_diversity,
-strengths, improvements, recommendations, alignment_comment
-
-strengths, improvements, recommendations: arrays of 3 short strings from a student's point of view.
-alignment_comment: 1–2 sentences on whether the talk matches the provided context (or that context is missing)."""
+Return JSON with ONLY these numeric keys: {", ".join(score_keys)}."""
 
         p: Optional[Dict[str, Any]] = None
         last_err: Optional[Exception] = None
-        for attempt in range(3):
-            suffix = ""
-            if attempt >= 1:
-                suffix = (
-                    "\n\nIMPORTANT: Reply with ONE valid JSON object only. No markdown fences. "
-                    "Every criterion key must be a number from 0 to 10 (not the text 'average', not all 5s unless truly earned). "
-                    "Do not omit keys."
-                )
+        # Increase token budget on length-truncation; keep reasoning low so output tokens remain.
+        attempt_plans = (
+            {"max_completion_tokens": 8000, "reasoning_effort": "low"},
+            {"max_completion_tokens": 16000, "reasoning_effort": "low"},
+            {"max_completion_tokens": 16000, "reasoning_effort": "minimal"},
+        )
+        for i, plan in enumerate(attempt_plans):
             try:
                 response = self._chat_json_completion(
                     messages=[
                         {"role": "system", "content": system_pedagogy},
-                        {"role": "user", "content": user_pedagogy + suffix},
+                        {"role": "user", "content": user_pedagogy},
                     ],
-                    max_completion_tokens=3500,
+                    max_completion_tokens=int(plan["max_completion_tokens"]),
                     prefer_json_object_format=True,
+                    reasoning_effort=plan.get("reasoning_effort"),
                 )
                 response_content = self._completion_message_text(response)
                 p = self._safe_json_loads(response_content)
@@ -2338,13 +2340,50 @@ alignment_comment: 1–2 sentences on whether the talk matches the provided cont
             except Exception as e:
                 last_err = e
                 p = None
-                logger.warning("Pedagogy JSON attempt %s failed: %s", attempt + 1, e)
+                logger.warning(
+                    "Pedagogy score JSON attempt %s failed (tokens=%s effort=%s): %s",
+                    i + 1,
+                    plan["max_completion_tokens"],
+                    plan.get("reasoning_effort"),
+                    e,
+                )
 
         if p is None:
             raise RuntimeError(
                 "Content scoring failed: the lecture-content model did not return a parseable rubric JSON "
-                f"after 3 attempts ({last_err}). Scores were NOT set to 50%. Re-run the analysis."
+                f"after {len(attempt_plans)} attempts ({last_err}). Scores were NOT set to 50%. Re-run the analysis."
             )
+
+        # Optional short comments; failure must not wipe the numeric scores already obtained.
+        try:
+            comment_resp = self._chat_json_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the same student rater. Given the scores already decided, "
+                            "return JSON only with keys: strengths (3 short strings), improvements (3), "
+                            "recommendations (3), alignment_comment (1-2 sentences). No scores."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{lc_block}\nScores: {json.dumps({k: p.get(k) for k in score_keys})}\n"
+                            f"Transcript excerpt:\n{transcript_for_llm[:6000]}"
+                        ),
+                    },
+                ],
+                max_completion_tokens=1200,
+                prefer_json_object_format=True,
+                reasoning_effort="low",
+            )
+            comments = self._safe_json_loads(self._completion_message_text(comment_resp))
+            for k in ("strengths", "improvements", "recommendations", "alignment_comment"):
+                if comments.get(k) not in (None, ""):
+                    p[k] = comments.get(k)
+        except Exception as e:
+            logger.warning("Content comment JSON skipped (scores kept): %s", e)
 
         p["lecture_context_provided"] = bool(lc)
         p["pedagogy_parse_failed"] = False
@@ -2373,8 +2412,9 @@ alignment_comment: 1–2 sentences on whether the talk matches the provided cont
                             ),
                         },
                     ],
-                    max_completion_tokens=400,
+                    max_completion_tokens=2500,
                     prefer_json_object_format=True,
+                    reasoning_effort="low",
                 )
                 ac = self._completion_message_text(align_resp)
                 aj = self._safe_json_loads(ac) if ac else {}
