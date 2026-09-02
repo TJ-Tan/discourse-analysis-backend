@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 import json
 import re
 import hashlib
+from text_cues import (
+    salient_content_terms,
+    contentful_hook_sentence,
+    contentful_evidence_sentences,
+)
 
 # Load environment variables
 load_dotenv()
@@ -86,22 +91,8 @@ def _english_list_phrases(items: List[str]) -> str:
 
 
 def _salient_terms(text: str, limit: int = 14) -> List[str]:
-    """Short topical tokens from transcript excerpt (deterministic; for prompting only)."""
-    stop = {
-        "about", "after", "again", "before", "being", "could", "every", "first", "going", "hello", "right", "there",
-        "these", "those", "where", "which", "would", "your", "their", "today", "tomorrow", "really", "actually",
-        "lecture", "session", "course", "module", "topic", "students", "student", "learning",
-    }
-    words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9-]{4,}\b", (text or "").lower())
-    out: List[str] = []
-    for w in words:
-        if w in stop:
-            continue
-        if w not in out:
-            out.append(w)
-        if len(out) >= limit:
-            break
-    return out
+    """Topical tokens from the transcript (course codes and content nouns — not small-talk)."""
+    return salient_content_terms(text, limit)
 
 
 def _lecture_thumbprint_block(transcript_excerpt: str, lecture_context: str, first_question: str = "") -> str:
@@ -115,14 +106,13 @@ def _lecture_thumbprint_block(transcript_excerpt: str, lecture_context: str, fir
         lines.append(f"- Stated context (first line): {lead}")
     tex = (transcript_excerpt or "").strip()
     if tex:
-        first_sent = (tex.split(".")[0] or tex).strip()
-        if len(first_sent) > 260:
-            first_sent = first_sent[:257] + "…"
-        lines.append(f'- Transcript opening (topic/tone): "{first_sent}"')
+        hook = contentful_hook_sentence(tex, max_chars=260)
+        if hook:
+            lines.append(f'- Transcript content cue (not attendance small-talk): "{hook}"')
     terms = _salient_terms(tex[:2200], 14)
     if terms:
         lines.append(
-            "- Salient excerpt terms (weave 3–5 naturally; do not dump them as a comma-list sentence): "
+            "- Salient excerpt terms (course codes / disciplinary nouns only; never function words like usually/seven/week): "
             + ", ".join(terms)
         )
     fq = (first_question or "").strip()
@@ -1312,6 +1302,8 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
             lecture_context or "",
             first_question_hook,
         )
+        evid_sents = contentful_evidence_sentences(transcript_excerpt or "", 2)
+        evid_sents = (evid_sents + ["", ""])[:2]
 
         raw_facts = f"""MARS RAW REPORT (layer 0 — facts; layer 1 will interpret, layer 2 will narrate).
 
@@ -1337,9 +1329,9 @@ Total instructor questions: {total_questions} | qpm: {questions_per_minute} | C+
 Transcript excerpt:
 {transcript_excerpt[:2500]}
 
-Evidence snippets (use these as verbatim cues in the narrative; keep quotes short):
-1) "{(transcript_excerpt.split('.')[:1][0] or '').strip()[:160]}"
-2) "{(''.join(transcript_excerpt.split('.')[1:2]) or '').strip()[:160]}"
+Evidence snippets (use these as verbatim cues in the narrative; keep quotes short; skip attendance/admin openers unless they name the course):
+1) "{evid_sents[0]}"
+2) "{evid_sents[1]}"
 
 Frames sampled: {sample_frames_count} {filler_text}
 
@@ -1370,7 +1362,7 @@ Return JSON only with keys:
   • If context_alignment_verdict is mismatch OR content_penalty_points ≥ 5: in plain language (no "alignment score 0.00" jargon), say what the instructor claimed vs what the transcript suggests (e.g. topic or discipline mismatch), quote a short transcript cue, and state that Content was penalised by 50 marks for misalignment (i.e. −5 on the internal /10 scale).
 - strengths_from_rubric: ONE polished sentence (proper commas/semicolons). Weave rubric strengths as fluent prose, e.g. "The session shows clear delivery and a logically structured progression." Never output a bare concatenation like "Clear delivery Structured presentation".
 - growth_from_rubric: ONE polished sentence for development themes, same punctuation rules. Never output unpunctuated stacked phrases.
-- lecture_thumbprint: exactly 3 short strings in a JSON array. Each must name something concrete from LECTURE-SPECIFIC GROUNDING or evidence snippets (opening line, salient term, first question, or context first line). Ban lines that could apply unchanged to any recording (e.g. "the instructor explained clearly" with no topic).
+- lecture_thumbprint: exactly 3 short strings. Each must be a real topic, course code, or teaching move from GROUNDING. Never use function words or number-words as topics (usually, seven, week, people, because).
 - optional_question_illustration: one short paraphrased question (max 25 words) or empty string — never a long quoted block."""
 
         narrative_system = """You are Layer 2 — Narrative generator for higher-education instructor feedback (faculty-development style).
@@ -1382,7 +1374,7 @@ Voice: insightful, constructive, academically professional — like an experienc
 Tone: professional, warm, precise. Reframe limitations as opportunities. Avoid blunt negative words ("poor", "weak", "bad").
 
 LECTURE SPECIFICITY (critical — avoids generic boilerplate):
-- Open paragraph_overall with a concrete hook (topic, task, or moment) drawn only from Layer 1 lecture_thumbprint, context_alignment, or the evidence snippets — not a template opener. The first sentence must include at least one distinctive cue (term, question stem, or paraphrased opening move) from this recording.
+- Open paragraph_overall with a concrete hook (course code, concept, or teaching moment) from Layer 1 lecture_thumbprint — not attendance small-talk and not words like "usually" or "seven".
 - Do not start two paragraphs with the same construction (e.g. both "Overall, …" or both "In this session, …").
 - Ban these stock phrases anywhere: "paints a picture", "clear strength lies in", "most productive next step", "relatively stronger performance", "intellectual thread" (unless quoting), "session's purpose" (unless tied to named content from inputs).
 
@@ -1567,22 +1559,34 @@ FORCE_FULL MODE:
                         fb_p1 = (fb_p1 + note).strip()
             except Exception:
                 pass
-            tex_hook = (transcript_excerpt or "").strip().replace("\n", " ")
-            if len(tex_hook) > 220:
-                tex_hook = tex_hook[:217] + "…"
+            hook = contentful_hook_sentence(transcript_excerpt or "", max_chars=160)
             sal = _salient_terms(transcript_excerpt or "", 8)
-            t0 = sal[0] if sal else "the material you foreground"
-            t1 = sal[1] if len(sal) > 1 else t0
-            if tex_hook:
+            topical = [x for x in sal if x.lower() not in {"usually", "seven", "week", "people"}]
+            t0 = topical[0] if topical else ""
+            t1 = topical[1] if len(topical) > 1 else ""
+            strongest_name = strongest_category[0]
+            strongest_pct = strongest_category[1] * 10
+            if hook and t0 and t1:
                 fb_p2 = (
-                    f"From the opening stretch of the transcript ({tex_hook[:120]}{'…' if len(tex_hook) > 120 else ''}), "
-                    f"the work clusters around ideas such as {t0} and {t1}. That helps explain why {strongest_category[0].lower()} "
-                    f"registers highest here ({strongest_category[1]*10:.1f}/100): students have concrete anchors while you develop the explanation."
+                    f"A useful content cue in this recording is: “{hook}”. "
+                    f"The spoken material is more credibly about {t0} and {t1} than about the opening small-talk. "
+                    f"That is why {strongest_name.lower()} is the higher pillar here ({strongest_pct:.1f}/100): "
+                    f"students get a clearer signal there than in the weaker block."
+                )
+            elif hook:
+                fb_p2 = (
+                    f"A useful content cue in this recording is: “{hook}”. "
+                    f"That helps explain why {strongest_name.lower()} registers highest ({strongest_pct:.1f}/100)."
+                )
+            elif t0:
+                fb_p2 = (
+                    f"Across the sampled transcript, recurring cues around {t0} give {strongest_name.lower()} "
+                    f"room to land ({strongest_pct:.1f}/100)."
                 )
             else:
                 fb_p2 = (
-                    f"Across the sampled transcript, recurring cues around {t0} give {strongest_category[0].lower()} "
-                    f"room to land ({strongest_category[1]*10:.1f}/100), even where the excerpt is thin."
+                    f"{strongest_name} is the stronger pillar in this recording ({strongest_pct:.1f}/100); "
+                    f"use the transcript and rubric evidence below rather than the opening greeting as the topic anchor."
                 )
             fq_fb = first_question_hook.replace('"', "'")
             if len(fq_fb) > 160:

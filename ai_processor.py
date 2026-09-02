@@ -34,6 +34,7 @@ from metrics_config import (
     compute_mars_engagement_category_score, compute_mars_overall_score,
 )
 from context_narrative import human_context_mismatch_paragraph
+from text_cues import snippet_around, evidence_with_example
 
 # Load environment variables
 load_dotenv()
@@ -1916,20 +1917,7 @@ Return only the processed transcript with proper punctuation and sentence segmen
         )
 
     def _snippet_around(self, text: str, needle: str, radius: int = 110) -> str:
-        if not text:
-            return ""
-        t = text
-        idx = t.lower().find((needle or "").lower())
-        if idx < 0:
-            return ""
-        lo = max(0, idx - radius)
-        hi = min(len(t), idx + len(needle) + radius)
-        snip = t[lo:hi].replace("\n", " ").strip()
-        if lo > 0:
-            snip = "…" + snip
-        if hi < len(t):
-            snip = snip + "…"
-        return snip
+        return snippet_around(text, needle, radius)
 
     def _context_alignment_heuristic(self, lecture_context: str, transcript: str) -> Dict[str, Any]:
         """
@@ -2083,48 +2071,84 @@ Return only the processed transcript with proper punctuation and sentence segmen
 
         set_if_empty(
             "structural_sequencing",
-            f"Evidence: sequencing markers appear ~{per_1k(seq_count)} per 1,000 words (e.g., first/next/then/finally). "
-            f"Example: \"{self._snippet_around(t, 'first') or self._snippet_around(t, 'next') or self._snippet_around(t, 'then')}\"",
+            evidence_with_example(
+                f"Evidence: explicit sequencing language (first/next/then/finally) occurs about {per_1k(seq_count)} times per 1,000 words.",
+                t,
+                ("to begin", "finally", "in summary", "next we", "next I'll", "second"),
+                "If those signposts are rare, the student-perspective score still reflects whether ideas seemed to build in order overall.",
+            ),
         )
         set_if_empty(
             "logical_consistency",
-            "Evidence: within the excerpt provided, explanations reuse terms and link ideas without obvious contradictions. "
-            "If this is a highly technical lecture, verify key claims against your module materials; the system cannot fully validate every domain-specific statement.",
+            evidence_with_example(
+                "Evidence: the lecture is checked for whether later claims still fit earlier ones (student-listener view).",
+                t,
+                ("that means", "which means", "in other words", "so if", "that is"),
+                "No short definition/bridge phrase was quoted; the score is the model’s coherence judgement of the transcript, not a keyword hit.",
+            ),
         )
         set_if_empty(
             "closure_framing",
-            f"Evidence: recap/closure cues appear ~{per_1k(recap_count)} per 1,000 words (e.g., in summary/to conclude/recap). "
-            f"Example: \"{self._snippet_around(t, 'in summary') or self._snippet_around(t, 'to conclude') or self._snippet_around(t, 'recap')}\"",
+            evidence_with_example(
+                f"Evidence: recap/closure phrases occur about {per_1k(recap_count)} times per 1,000 words.",
+                t,
+                ("in summary", "to summarise", "to summarize", "to conclude", "key takeaway", "the main point", "recap"),
+                "If the lecturer did not say “in summary” etc., framing may still appear as an opening agenda or closing reminder scored from the full transcript.",
+            ),
         )
         set_if_empty(
             "conceptual_accuracy",
-            "Evidence: the score is inferred from how consistently concepts are defined and used in the transcript excerpt. "
-            "For strong assurance, cross-check key definitions in the transcript against your slides/notes (the system may miss subtle technical inaccuracies).",
+            evidence_with_example(
+                "Evidence: the score reflects whether a student could trust how terms are introduced and reused.",
+                t,
+                ("is called", "we define", "is defined", "this is called", "what we mean"),
+                "No dictionary-style definition cue was found; the score is the student-perspective rating of how consistently terms were used.",
+            ),
         )
         set_if_empty(
             "causal_reasoning_depth",
-            f"Evidence: causal connectors appear ~{per_1k(causal_count)} per 1,000 words (e.g., because/therefore/as a result), indicating 'why/how' reasoning. "
-            f"Example: \"{self._snippet_around(t, 'because') or self._snippet_around(t, 'therefore') or self._snippet_around(t, 'as a result')}\"",
+            evidence_with_example(
+                f"Evidence: cause–effect connectors (because/therefore/as a result) occur about {per_1k(causal_count)} times per 1,000 words.",
+                t,
+                ("because", "therefore", "as a result", "due to", "consequently"),
+                "Few explicit why/how connectors were found; a low or moderate score here usually means the talk stayed at description more than mechanism.",
+            ),
         )
         set_if_empty(
             "multi_perspective_explanation",
-            f"Evidence: comparison/contrast cues appear ~{per_1k(contrast_count)} per 1,000 words (e.g., on the other hand/alternatively/compare). "
-            f"Example: \"{self._snippet_around(t, 'on the other hand') or self._snippet_around(t, 'alternatively') or self._snippet_around(t, 'compare')}\"",
+            evidence_with_example(
+                f"Evidence: contrast/alternative phrasing occurs about {per_1k(contrast_count)} times per 1,000 words.",
+                t,
+                ("on the other hand", "alternatively", "in contrast", "whereas", "another way"),
+                "No clear ‘another way / in contrast’ cue was quoted; the score reflects whether multiple angles were audible overall.",
+            ),
         )
         set_if_empty(
             "example_quality_frequency",
-            f"Evidence: example cues appear ~{per_1k(ex_count)} per 1,000 words (e.g., for example/for instance/consider). "
-            f"Example: \"{self._snippet_around(t, 'for example') or self._snippet_around(t, 'for instance') or self._snippet_around(t, 'consider')}\"",
+            evidence_with_example(
+                f"Evidence: example signposts (for example/for instance) occur about {per_1k(ex_count)} times per 1,000 words.",
+                t,
+                ("for example", "for instance", "let's take", "let us take"),
+                "If those phrases are missing, examples may still be present as worked cases; the score is not taken from a random word like “consider” in another sense.",
+            ),
         )
         set_if_empty(
             "analogy_concept_bridging",
-            f"Evidence: analogy cues appear ~{per_1k(analogy_count)} per 1,000 words (e.g., think of/similar to/imagine). "
-            f"Example: \"{self._snippet_around(t, 'think of') or self._snippet_around(t, 'similar to') or self._snippet_around(t, 'imagine')}\"",
+            evidence_with_example(
+                f"Evidence: analogy bridges (think of / similar to / imagine) occur about {per_1k(analogy_count)} times per 1,000 words.",
+                t,
+                ("think of", "similar to", "imagine that", "as if"),
+                "The word “like” is not counted as an analogy by itself (it is too common in speech). The score is the student-perspective rating of whether new ideas were tied to something familiar.",
+            ),
         )
         set_if_empty(
             "representation_diversity",
-            "Evidence: representation diversity is inferred from references to multiple forms (e.g., verbal explanation plus equations/diagrams/slides). "
-            "If the recording is slides-heavy without verbal description, the system may under-detect representations that are only visible on screen.",
+            evidence_with_example(
+                "Evidence: multiple representations are inferred from spoken references to other forms besides pure narration.",
+                t,
+                ("on the slide", "this diagram", "this equation", "this graph", "this figure", "this table", "this code"),
+                "If the lecturer pointed at slides without naming them, this criterion can under-count what was only visible on screen.",
+            ),
         )
 
         # Attach context line to all nine criteria evidence blocks (Content 1.1–1.3) if context exists.
