@@ -17,6 +17,8 @@ from text_cues import (
     salient_content_terms,
     contentful_hook_sentence,
     contentful_evidence_sentences,
+    lecture_context_alignment,
+    summary_context_alignment_sentence,
 )
 
 # Load environment variables
@@ -146,37 +148,9 @@ def _questioning_blurb(total_questions: int) -> str:
     )
 
 
-def _summary_fallback_context_line(lecture_context: str, transcript_excerpt: str) -> str:
+def _summary_fallback_context_line(lecture_context: str, transcript_excerpt: str, analysis_verdict: str = "") -> str:
     """Short alignment note when LLM summary fallback runs (no meta-instructions to the reader)."""
-    lc = (lecture_context or "").strip()
-    if not lc:
-        return (
-            " No instructor context was provided for this lecture (for example module, topic, or intended learning outcomes), "
-            "so stated-versus-delivered alignment cannot be assessed from the submission."
-        )
-    tex = (transcript_excerpt or "").lower()
-    words = set(re.findall(r"[a-z0-9]{4,}", lc.lower()))
-    junk = {
-        "this", "that", "with", "from", "have", "been", "will", "your", "lecture", "session", "course",
-        "students", "student", "learning", "module", "topic", "about", "into", "their", "what", "when",
-        "where", "which", "there", "these", "those",
-    }
-    words -= junk
-    hits = sum(1 for w in list(words)[:50] if w in tex)
-    if hits >= 2:
-        return (
-            " Against the instructor-supplied context, the transcript excerpt shows overlapping themes and terminology, "
-            "suggesting broadly aligned delivery within the sample reviewed (you should still confirm against the full session and official ILOs)."
-        )
-    if hits == 1:
-        return (
-            " Against the instructor-supplied context, overlap with the transcript excerpt is limited; "
-            "it is worth checking whether the full recording matches your stated module focus and outcomes."
-        )
-    return (
-        " Against the instructor-supplied context, keyword overlap with the transcript excerpt is weak; "
-        "verify whether spoken content matches your intended module, topic, and learning outcomes."
-    )
+    return summary_context_alignment_sentence(lecture_context, transcript_excerpt, analysis_verdict)
 
 
 def _safe_json_loads_llm(raw: str) -> dict:
@@ -1171,52 +1145,16 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         context_alignment_verdict = summary_data.get('context_alignment_verdict', None)
         content_penalty_points = summary_data.get('content_penalty_points', 0)
 
-        # Evidence-based Context-Aware Analysis (deterministic): recompute alignment from the submitted
-        # lecture context + transcript excerpt, so the summary always flags obvious mismatches.
-        def _context_alignment_heuristic(lc: str, txt: str):
-            lc = (lc or "").strip()
-            txt = (txt or "").strip()
-            if not lc or not txt:
-                return None, None, "No lecture context or transcript excerpt available for alignment."
-            stop = {
-                "this","that","these","those","the","a","an","and","or","but","to","of","in","on","for","with","as","at","by","from",
-                "is","are","was","were","be","been","being","it","we","you","they","i","our","your","their",
-                "lecture","session","week","module","course","topic","learning","outcome","outcomes","students","student","audience",
-                "should","teach","about","using","use",
-            }
-            import re as _re
-            ctx_tokens = _re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())
-            ctx_terms = []
-            for tok in ctx_tokens:
-                if tok in stop:
-                    continue
-                if tok not in ctx_terms:
-                    ctx_terms.append(tok)
-                if len(ctx_terms) >= 18:
-                    break
-            tl = txt.lower()
-            hits = [w for w in ctx_terms if w in tl]
-            score = len(hits) / max(1, len(ctx_terms))
-            if score >= 0.35:
-                verdict = "match"
-            elif score >= 0.15:
-                verdict = "partial"
-            else:
-                verdict = "mismatch"
-            rationale = f"Keyword overlap between context and transcript excerpt is {len(hits)}/{len(ctx_terms)} (score={score:.2f})."
-            return round(float(score), 3), verdict, rationale
-
-        hs, hv, hr = _context_alignment_heuristic(lecture_context, transcript_excerpt or "")
-        if hs is not None:
-            context_alignment_score = hs
-        if hv:
-            context_alignment_verdict = hv
-        # If mismatch is detected heuristically, ensure penalty is treated as applied for messaging.
-        try:
-            if (str(context_alignment_verdict or "").lower().strip() == "mismatch") and float(content_penalty_points or 0) < 4.9:
-                content_penalty_points = 5
-        except Exception:
+        # Keep analysis-time alignment. A short opening excerpt (attendance small-talk) must not
+        # overwrite a GPU/GPGPU match or invent a −50 Content penalty.
+        incoming_verdict = str(context_alignment_verdict or "").lower().strip()
+        al = lecture_context_alignment(lecture_context, transcript_excerpt or "")
+        if incoming_verdict in ("match", "partial"):
             pass
+        elif al.get("verdict"):
+            context_alignment_verdict = al.get("verdict")
+            if al.get("alignment_score") is not None:
+                context_alignment_score = al.get("alignment_score")
         
         # Instructor questions with CLI (evidence)
         questions_text = ""
@@ -1528,7 +1466,9 @@ FORCE_FULL MODE:
         except (json.JSONDecodeError, ValueError, AttributeError) as e:
             # Fallback summary — faculty-development tone; no rubric label dumps or ICAP tables
             q_note = _questioning_blurb(total_questions)
-            ctx_sent = _summary_fallback_context_line(lecture_context, transcript_excerpt or "")
+            ctx_sent = _summary_fallback_context_line(
+                lecture_context, transcript_excerpt or "", str(context_alignment_verdict or "")
+            )
             s_line = _english_list_phrases([str(x) for x in (extra_strengths or [])[:5] if x])
             g_line = _english_list_phrases([str(x) for x in (extra_growth or [])[:5] if x])
             rubric_extra = ""

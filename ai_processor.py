@@ -34,7 +34,7 @@ from metrics_config import (
     compute_mars_engagement_category_score, compute_mars_overall_score,
 )
 from context_narrative import human_context_mismatch_paragraph
-from text_cues import snippet_around, evidence_with_example
+from text_cues import snippet_around, evidence_with_example, lecture_context_alignment
 
 # Load environment variables
 load_dotenv()
@@ -1920,61 +1920,8 @@ Return only the processed transcript with proper punctuation and sentence segmen
         return snippet_around(text, needle, radius)
 
     def _context_alignment_heuristic(self, lecture_context: str, transcript: str) -> Dict[str, Any]:
-        """
-        Deterministic context↔transcript alignment (0–1) with evidence.
-        Used to make Context-Aware Analysis reliable even when an LLM alignment call fails.
-        """
-        lc = (lecture_context or "").strip()
-        t = (transcript or "").strip()
-        if not lc or not t:
-            return {
-                "alignment_score": None,
-                "verdict": None,
-                "rationale": "No lecture context or transcript text available for alignment check.",
-                "matched_terms": [],
-                "snippet": "",
-            }
-        stop = {
-            "this","that","these","those","the","a","an","and","or","but","to","of","in","on","for","with","as","at","by","from",
-            "is","are","was","were","be","been","being","it","we","you","they","i","our","your","their",
-            "lecture","session","week","module","course","topic","learning","outcome","outcomes","students","student","audience",
-            "should","teach","about","using","use",
-        }
-        ctx_tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())
-        ctx_terms: List[str] = []
-        for tok in ctx_tokens:
-            if tok in stop:
-                continue
-            if tok not in ctx_terms:
-                ctx_terms.append(tok)
-            if len(ctx_terms) >= 18:
-                break
-        tl = t.lower()
-        hits = [w for w in ctx_terms if w in tl]
-        score = len(hits) / max(1, len(ctx_terms))
-        if score >= 0.35:
-            verdict = "match"
-        elif score >= 0.15:
-            verdict = "partial"
-        else:
-            verdict = "mismatch"
-        snippet = ""
-        if hits:
-            for w in hits[:3]:
-                snippet = self._snippet_around(t, w)
-                if snippet:
-                    break
-        rationale = (
-            f"Keyword overlap between context and transcript is {len(hits)}/{len(ctx_terms)} terms (score={score:.2f})."
-            + (f" Example matched cue: \"{snippet}\"." if snippet else "")
-        )
-        return {
-            "alignment_score": round(float(score), 3),
-            "verdict": verdict,
-            "rationale": rationale,
-            "matched_terms": hits[:10],
-            "snippet": snippet,
-        }
+        """Deterministic context↔transcript alignment (GPU/GPGPU synonyms, not opening-excerpt traps)."""
+        return lecture_context_alignment(lecture_context, transcript)
 
     def _fill_mars_content_evidence_fallback(self, transcript: str, p: Dict[str, Any], lecture_context: str = "") -> Dict[str, Any]:
         """
@@ -2151,23 +2098,6 @@ Return only the processed transcript with proper punctuation and sentence segmen
             ),
         )
 
-        # Attach context line to all nine criteria evidence blocks (Content 1.1–1.3) if context exists.
-        if context_line:
-            for k in (
-                "structural_sequencing",
-                "logical_consistency",
-                "closure_framing",
-                "conceptual_accuracy",
-                "causal_reasoning_depth",
-                "multi_perspective_explanation",
-                "example_quality_frequency",
-                "analogy_concept_bridging",
-                "representation_diversity",
-            ):
-                ek = f"evidence_{k}"
-                cur = str(p.get(ek, "") or "").strip()
-                if cur and context_line.lower() not in cur.lower():
-                    p[ek] = f"{cur} {context_line}".strip()
         return p
 
     async def analyze_student_feedback_metrics(self, speech_analysis: Dict) -> Dict[str, Any]:

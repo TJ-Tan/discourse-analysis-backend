@@ -145,13 +145,159 @@ def first_usable_snippet(text: str, markers: Sequence[str]) -> str:
     return ""
 
 
-def evidence_with_example(
-    intro: str,
-    transcript: str,
-    markers: Sequence[str],
-    empty_note: str,
-) -> str:
-    sn = first_usable_snippet(transcript, markers)
-    if sn:
-        return f'{intro} For example: "{sn}"'
-    return f"{intro} {empty_note}".strip()
+_GENERIC_ORG = {
+    "school", "faculty", "university", "college", "department", "institute", "computing",
+    "education", "information", "sciences", "science", "engineering", "soc",
+}
+
+# Short domain tokens and near-synonyms so "gpu" matches a GPGPU / CUDA lecture.
+_CONTEXT_SYNONYMS = {
+    "gpu": ("gpu", "gpgpu", "cuda", "nvidia", "graphics", "parallel", "kernel"),
+    "gpgpu": ("gpgpu", "gpu", "cuda", "nvidia", "graphics"),
+    "cuda": ("cuda", "gpu", "gpgpu", "nvidia"),
+    "nvidia": ("nvidia", "cuda", "gpu"),
+    "computational": ("computational", "compute", "computation", "computing"),
+    "parallel": ("parallel", "parallelism", "gpu", "gpgpu"),
+    "graphics": ("graphics", "gpu", "gpgpu"),
+}
+
+
+def _context_term_matches(term: str, transcript_lower: str) -> bool:
+    t = (term or "").lower().strip()
+    if not t:
+        return False
+    variants = _CONTEXT_SYNONYMS.get(t, (t,))
+    tl = transcript_lower or ""
+    for v in variants:
+        if len(v) <= 3:
+            if re.search(r"\b" + re.escape(v) + r"\b", tl) or v in tl:
+                return True
+        elif v in tl:
+            return True
+    return False
+
+
+def lecture_context_alignment(lecture_context: str, transcript: str) -> dict:
+    """
+    Align instructor context with the transcript.
+
+    Naive keyword overlap fails for 'computational gpu' vs a GPGPU lecture: 'gpu' is only
+    three letters (dropped by 4+ filters) and 'school'/'computing' are institutional, not topical.
+    """
+    lc = (lecture_context or "").strip()
+    t = (transcript or "").strip()
+    if not lc or not t:
+        return {
+            "alignment_score": None,
+            "verdict": None,
+            "rationale": "No lecture context or transcript text available for alignment check.",
+            "matched_terms": [],
+            "snippet": "",
+        }
+    stop = {
+        "this", "that", "these", "those", "the", "a", "an", "and", "or", "but", "to", "of", "in", "on",
+        "for", "with", "as", "at", "by", "from", "is", "are", "was", "were", "be", "been", "being",
+        "it", "we", "you", "they", "i", "our", "your", "their", "lecture", "session", "week", "module",
+        "course", "topic", "learning", "outcome", "outcomes", "students", "student", "audience",
+        "should", "teach", "about", "using", "use",
+    }
+    stop |= _GENERIC_ORG
+    # Allow 3-letter technical tokens (gpu, cpu, ram, api).
+    ctx_tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", lc.lower())
+    ctx_terms: List[str] = []
+    for tok in ctx_tokens:
+        if tok in stop:
+            continue
+        if tok not in ctx_terms:
+            ctx_terms.append(tok)
+        if len(ctx_terms) >= 18:
+            break
+    tl = t.lower()
+    hits = [w for w in ctx_terms if _context_term_matches(w, tl)]
+    ctx_l = lc.lower()
+    ctx_has_gpu_family = any(x in ctx_l for x in ("gpu", "gpgpu", "cuda", "nvidia"))
+    tr_has_gpu_family = any(_context_term_matches(h, tl) for h in ("gpu", "gpgpu", "cuda", "nvidia"))
+    if ctx_has_gpu_family and tr_has_gpu_family:
+        score = max(0.85, (len(hits) / max(1, len(ctx_terms))) if ctx_terms else 0.85)
+        verdict = "match"
+        rationale = (
+            "Instructor context names GPU/GPGPU-style computing and the transcript uses the same family of terms "
+            f"(matched: {', '.join(hits) or 'gpu/gpgpu/cuda'})."
+        )
+        snippet = snippet_around(t, hits[0] if hits else "gpu") or snippet_around(t, "gpgpu") or snippet_around(t, "cuda")
+        return {
+            "alignment_score": round(float(score), 3),
+            "verdict": verdict,
+            "rationale": rationale,
+            "matched_terms": hits[:10] or ["gpu"],
+            "snippet": snippet,
+        }
+
+    if not ctx_terms:
+        return {
+            "alignment_score": 0.5,
+            "verdict": "partial",
+            "rationale": "Context was mostly generic (e.g. school/course wording) so topical overlap could not be scored strictly.",
+            "matched_terms": [],
+            "snippet": "",
+        }
+    score = len(hits) / max(1, len(ctx_terms))
+    if score >= 0.35:
+        verdict = "match"
+    elif score >= 0.15 or hits:
+        # One strong topical hit (e.g. gpu) is enough for partial+, not a 'weak overlap' scare.
+        verdict = "match" if hits else "partial"
+        if hits and score < 0.35:
+            verdict = "match"
+            score = max(score, 0.4)
+    else:
+        verdict = "mismatch"
+    snippet = ""
+    if hits:
+        for w in hits[:3]:
+            snippet = snippet_around(t, w)
+            if snippet:
+                break
+    rationale = (
+        f"Keyword overlap between context and transcript is {len(hits)}/{len(ctx_terms)} topical terms (score={score:.2f})."
+        + (f' Example matched cue: "{snippet}".' if snippet else "")
+    )
+    return {
+        "alignment_score": round(float(score), 3),
+        "verdict": verdict,
+        "rationale": rationale,
+        "matched_terms": hits[:10],
+        "snippet": snippet,
+    }
+
+
+def summary_context_alignment_sentence(lecture_context: str, transcript: str, analysis_verdict: str = "") -> str:
+    """Instructor-facing sentence for PDF/summary fallbacks."""
+    lc = (lecture_context or "").strip()
+    if not lc:
+        return (
+            " No instructor context was provided for this lecture (for example module, topic, or intended learning outcomes), "
+            "so stated-versus-delivered alignment cannot be assessed from the submission."
+        )
+    v = (analysis_verdict or "").lower().strip()
+    if not v:
+        v = (lecture_context_alignment(lc, transcript).get("verdict") or "").lower().strip()
+    if v == "match":
+        return (
+            " Against the instructor-supplied context, the transcript matches the stated topic "
+            "(for example a GPU/GPGPU computing lecture when that is what you named)."
+        )
+    if v == "partial":
+        return (
+            " Against the instructor-supplied context, the transcript is partly aligned with the stated topic; "
+            "some terms overlap and some may be implied rather than repeated verbatim."
+        )
+    if v == "mismatch":
+        return (
+            " Against the instructor-supplied context, the spoken content appears to be a different topic; "
+            "check whether the recording is the session you intended to analyse."
+        )
+    return (
+        " Instructor context was provided; topical overlap with the transcript could not be scored cleanly from keywords alone."
+    )
+
