@@ -95,12 +95,19 @@ def compute_mars_content_category_score_detailed(pedagogical_analysis: Dict[str,
     Final Content = 0.30×Org_sub + 0.40×Expl_sub + 0.30×Examples_sub
     (then Content is 20% of overall MARS via main_categories).
     """
-    def g(key: str, default: float = 7.0) -> float:
-        v = pedagogical_analysis.get(key, default)
+    def g(key: str) -> float:
+        if key not in pedagogical_analysis or pedagogical_analysis.get(key) is None:
+            raise RuntimeError(
+                f"Content scoring failed: missing criterion '{key}'. "
+                "The Content pillar LLM did not return a usable 0–10 score for this rubric item."
+            )
+        v = pedagogical_analysis.get(key)
         try:
             return float(v)
-        except (TypeError, ValueError):
-            return default
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(
+                f"Content scoring failed: criterion '{key}' is not a number (got {type(v).__name__})."
+            ) from e
 
     cw = MARS_CONFIG["content_criteria_weights"]
     co = cw["content_organisation"]

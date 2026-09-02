@@ -1613,30 +1613,90 @@ Return only the processed transcript with proper punctuation and sentence segmen
         
         return {'error': 'No frames successfully analyzed'}
     
-    def _ensure_mars_pedagogy_fields(self, p: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure MARS v20260224 nine content criteria exist; map legacy five-dimension scores if needed."""
-        co = float(p.get("content_organization") or 7.0)
-        cc = float(p.get("communication_clarity") or 7.0)
-        ue = float(p.get("use_of_examples") or 7.0)
-        defaults = {
-            "structural_sequencing": co,
-            "logical_consistency": co,
-            "closure_framing": co,
-            "conceptual_accuracy": cc,
-            "causal_reasoning_depth": cc,
-            "multi_perspective_explanation": cc,
-            "example_quality_frequency": ue,
-            "analogy_concept_bridging": ue,
-            "representation_diversity": ue,
-        }
-        for k, v in defaults.items():
-            if k not in p or p[k] is None:
-                p[k] = v
-        # Evidence strings for UI "Why this score" (optional; filled by LLM)
-        for k in defaults.keys():
+    def _ensure_mars_pedagogy_fields(self, p: Dict[str, Any], allow_legacy_map: bool = True) -> Dict[str, Any]:
+        """
+        Coerce MARS v20260224 nine content criteria to 0–10.
+        Does not invent midpoint (5.0) or 'good' (7.0) placeholders.
+        Missing nine-criterion scores may be mapped from LLM legacy aggregates when those were actually returned.
+        """
+        if not isinstance(p, dict):
+            raise RuntimeError("Content scoring failed: pedagogy payload is not a JSON object.")
+
+        have_nine = all(k in p and p.get(k) not in (None, "") for k in self.MARS_CONTENT_CRITERIA_KEYS)
+        if not have_nine and allow_legacy_map:
+            legacy_map = {
+                "structural_sequencing": "content_organization",
+                "logical_consistency": "content_organization",
+                "closure_framing": "content_organization",
+                "conceptual_accuracy": "communication_clarity",
+                "causal_reasoning_depth": "communication_clarity",
+                "multi_perspective_explanation": "communication_clarity",
+                "example_quality_frequency": "use_of_examples",
+                "analogy_concept_bridging": "use_of_examples",
+                "representation_diversity": "use_of_examples",
+            }
+            for k, src in legacy_map.items():
+                if k not in p or p.get(k) in (None, ""):
+                    if src in p and p.get(src) not in (None, ""):
+                        p[k] = p.get(src)
+
+        missing = [k for k in self.MARS_CONTENT_CRITERIA_KEYS if k not in p or p.get(k) in (None, "")]
+        if missing:
+            raise RuntimeError(
+                "Content scoring failed: the lecture-content model did not return scores for: "
+                + ", ".join(missing)
+                + ". This is not a default 50% score; re-run so the Content pillar can be judged from the transcript."
+            )
+
+        for k in self.MARS_CONTENT_CRITERIA_KEYS:
+            p[k] = self._coerce_score_0_10(p.get(k), k)
+
+        for k in self.MARS_CONTENT_LEGACY_KEYS:
+            if k in p and p.get(k) not in (None, ""):
+                try:
+                    p[k] = self._coerce_score_0_10(p.get(k), k)
+                except ValueError:
+                    pass
+
+        if p.get("content_organization") in (None, ""):
+            p["content_organization"] = round(
+                (p["structural_sequencing"] + p["logical_consistency"] + p["closure_framing"]) / 3.0, 1
+            )
+        if p.get("communication_clarity") in (None, ""):
+            p["communication_clarity"] = round(
+                (
+                    p["conceptual_accuracy"]
+                    + p["causal_reasoning_depth"]
+                    + p["multi_perspective_explanation"]
+                )
+                / 3.0,
+                1,
+            )
+        if p.get("use_of_examples") in (None, ""):
+            p["use_of_examples"] = round(
+                (
+                    p["example_quality_frequency"]
+                    + p["analogy_concept_bridging"]
+                    + p["representation_diversity"]
+                )
+                / 3.0,
+                1,
+            )
+        if p.get("engagement_techniques") in (None, ""):
+            p["engagement_techniques"] = p.get("communication_clarity")
+        if p.get("knowledge_checking") in (None, ""):
+            p["knowledge_checking"] = p.get("closure_framing")
+        if p.get("overall_effectiveness") in (None, ""):
+            p["overall_effectiveness"] = round(
+                (p["content_organization"] + p["communication_clarity"] + p["use_of_examples"]) / 3.0, 1
+            )
+
+        for k in self.MARS_CONTENT_CRITERIA_KEYS:
             ek = f"evidence_{k}"
             if ek not in p or p[ek] is None:
                 p[ek] = ""
+            else:
+                p[ek] = str(p[ek]).strip()
         return p
 
     def _augment_causal_reasoning_depth(self, transcript: str, llm_score: float) -> float:
@@ -1730,6 +1790,107 @@ Return only the processed transcript with proper punctuation and sentence segmen
                 kwargs.pop("response_format", None)
                 return openai_client.chat.completions.create(**kwargs)
         return openai_client.chat.completions.create(**kwargs)
+
+    MARS_CONTENT_CRITERIA_KEYS = (
+        "structural_sequencing",
+        "logical_consistency",
+        "closure_framing",
+        "conceptual_accuracy",
+        "causal_reasoning_depth",
+        "multi_perspective_explanation",
+        "example_quality_frequency",
+        "analogy_concept_bridging",
+        "representation_diversity",
+    )
+    MARS_CONTENT_LEGACY_KEYS = (
+        "content_organization",
+        "engagement_techniques",
+        "communication_clarity",
+        "use_of_examples",
+        "knowledge_checking",
+        "overall_effectiveness",
+    )
+
+    def _completion_message_text(self, response) -> str:
+        """Extract assistant text from a chat completion (handles empty/reasoning/list content)."""
+        if not response or not getattr(response, "choices", None):
+            raise ValueError("empty completion")
+        choice = response.choices[0]
+        finish = getattr(choice, "finish_reason", None)
+        msg = choice.message
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.append(str(part.get("text") or part.get("content") or ""))
+                else:
+                    parts.append(str(getattr(part, "text", None) or getattr(part, "content", None) or ""))
+            content = "".join(parts)
+        text = (content or "").strip()
+        if text:
+            return text
+        refusal = getattr(msg, "refusal", None)
+        if refusal:
+            raise ValueError(f"model refusal: {refusal}")
+        raise ValueError(f"AI response content is None or empty (finish_reason={finish})")
+
+    def _coerce_score_0_10(self, value: Any, key: str) -> float:
+        """Normalise LLM scores to 0–10 (accepts 0–100, '7/10', nested {score: n})."""
+        if value is None or value == "":
+            raise ValueError(f"missing score for {key}")
+        if isinstance(value, dict):
+            for nested_key in ("score", "rating", "value", "out_of_10", "marks"):
+                if nested_key in value and value.get(nested_key) is not None:
+                    return self._coerce_score_0_10(value.get(nested_key), key)
+            raise ValueError(f"{key} is an object without a numeric score")
+        if isinstance(value, (list, tuple)) and value:
+            return self._coerce_score_0_10(value[0], key)
+        if isinstance(value, bool):
+            raise ValueError(f"{key} is boolean, not a score")
+        if isinstance(value, str):
+            s = value.strip()
+            m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(10|100)\b", s)
+            if m:
+                num = float(m.group(1))
+                den = float(m.group(2))
+                if den <= 0:
+                    raise ValueError(f"{key} has invalid denominator")
+                return round(min(10.0, max(0.0, num * (10.0 / den))), 1)
+            m = re.search(r"(\d+(?:\.\d+)?)", s)
+            if not m:
+                raise ValueError(f"{key} is not a number ({value!r})")
+            value = float(m.group(1))
+        try:
+            v = float(value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{key} is not a number ({value!r})") from e
+        if v != v:
+            raise ValueError(f"{key} is NaN")
+        if v > 10.0 and v <= 100.0:
+            v = v / 10.0
+        if v < 0.0 or v > 10.0:
+            raise ValueError(f"{key} out of range after normalisation: {value}")
+        return round(v, 1)
+
+    def _transcript_for_content_llm(self, transcript: str, max_chars: int = 28000) -> str:
+        """Prefer the full lecture; if too long, keep start + middle + end so organisation/closure are visible."""
+        t = (transcript or "").strip()
+        if not t:
+            return ""
+        if len(t) <= max_chars:
+            return t
+        third = max(4000, max_chars // 3)
+        mid_start = max(0, (len(t) // 2) - (third // 2))
+        return (
+            t[:third]
+            + "\n\n[... middle of transcript omitted for length ...]\n\n"
+            + t[mid_start : mid_start + third]
+            + "\n\n[... later portion omitted for length ...]\n\n"
+            + t[-third:]
+        )
 
     def _snippet_around(self, text: str, needle: str, radius: int = 110) -> str:
         if not text:
@@ -2077,67 +2238,89 @@ Return JSON only:
         self, speech_analysis: Dict, visual_analysis: Dict, lecture_context: str = ""
     ) -> Dict[str, Any]:
         """
-        MARS Content category: nine criteria (Revised Rubric) + legacy five-dimension scores for reports.
+        MARS Content category: nine criteria (Revised Rubric) scored from a student-learner perspective.
+        Does not fall back to a silent 5.0 / 50% placeholder.
         """
         lc = (lecture_context or "").strip()
+        transcript = (speech_analysis.get("transcript") or "").strip()
+        if len(transcript) < 80:
+            raise RuntimeError(
+                "Content scoring failed: transcript is too short to judge whether a student could "
+                "understand the lecture (organisation, explanation, examples)."
+            )
+
+        transcript_for_llm = self._transcript_for_content_llm(transcript)
         lc_block = (
-            f"\n---\nINSTRUCTOR-PROVIDED LECTURE CONTEXT (authoritative for intended subject, course, level, and learning goals):\n{lc}\n---\n"
+            f"INSTRUCTOR-PROVIDED LECTURE CONTEXT (what this session is supposed to teach):\n{lc}\n"
             if lc
-            else "\n(No instructor lecture context was provided; you cannot judge topic alignment against stated course goals—score internal coherence only, and note the limitation in evidence where relevant.)\n"
+            else "(No instructor lecture context was provided. Judge from the spoken lecture alone: "
+            "would a student leave understanding this material? Note that course-goal alignment cannot be verified.)\n"
         )
 
-        context = f"""
-        COMPREHENSIVE LECTURE ANALYSIS DATA:
-        {lc_block}
-        Speech Analysis (Full Transcript excerpt):
-        - Transcript: {speech_analysis.get('transcript', '')[:6000]}...
-        - Speaking Rate: {speech_analysis.get('speaking_rate', 0):.1f} WPM
-        - Filler Word Ratio: {speech_analysis.get('filler_ratio', 0):.3f}
-        - Key Highlights: {'; '.join(speech_analysis.get('highlights', [])[:8])}
-        
-        Visual summary ({visual_analysis.get('frames_analyzed', 0)} frames):
-        - Scores — eye_contact: {visual_analysis.get('scores', {}).get('eye_contact', 'N/A')}, gestures: {visual_analysis.get('scores', {}).get('gestures', 'N/A')}, posture: {visual_analysis.get('scores', {}).get('posture', 'N/A')}, engagement: {visual_analysis.get('scores', {}).get('engagement', 'N/A')}, professionalism: {visual_analysis.get('scores', {}).get('professionalism', 'N/A')}
-        """
+        system_pedagogy = """You are a university student who has just sat through this lecture.
+Score the Content pillar from that learner's perspective: after listening, how well could you understand,
+follow, and mentally organise the material?
 
-        system_pedagogy = """You are an expert pedagogical analyst. Score the lecture transcript (1-10 each) for MARS Content rubric:
+Do NOT score delivery (voice, fillers, camera, gestures). Those are a different pillar.
+Do NOT give every criterion the same number. Use the full 0–10 scale. Never use 5 as a "don't know" placeholder —
+if evidence is thin, score low (1–4) and say so in evidence; if the lecture clearly helps students, score high (8–10).
 
-A) Content Organisation (MARS 1.1): structural_sequencing, logical_consistency, closure_framing
-B) Explanation Quality (MARS 1.2): conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation
-C) Use of Examples / Representation (MARS 1.3): example_quality_frequency, analogy_concept_bridging, representation_diversity
+Rubric bands (0–10):
+- 9–10 Excellent: a typical student could follow and learn with low cognitive load.
+- 7.5–8.9 Good: mostly clear; some gaps a student would still notice.
+- 6.0–7.4 Average: followable, but connections, why/how, or examples are easy to miss.
+- 4.0–5.9 Below average: a student would struggle to build a reliable mental model.
+- 0–3.9 Poor: a student would leave confused or unable to relate to the content.
 
-CRITICAL — LECTURE CONTEXT AND TOPIC ALIGNMENT:
-- When the instructor has provided "INSTRUCTOR-PROVIDED LECTURE CONTEXT", treat it as the ground truth for what this session should be about (e.g. course name, subject, topic, level, ILOs).
-- For ALL nine criteria in A, B, and C above, you MUST evaluate whether the spoken content is appropriate and aligned with that context.
-- If the transcript is largely about a different discipline or topic than the context states (e.g. extensive coding or unrelated content in a Japanese language class), the lecture is NOT instructionally successful for that course: score the nine criteria LOW (typically 2–5) and explain the misalignment explicitly in each evidence_* string. Do not give high scores for "clear structure" of the wrong subject matter.
-- If context is missing, do not invent alignment; score based on internal coherence of the transcript and state in evidence that alignment to course goals could not be verified.
+Nine criteria (score each independently):
 
-Also provide legacy aggregate scores (1-10): content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness.
+1.1 Content Organisation
+- structural_sequencing: Did ideas build from foundations to complexity, with signposting a student can follow?
+- logical_consistency: Did claims fit together without contradictions a student would notice?
+- closure_framing: Were objectives, recaps, or takeaways enough for a student to know what mattered?
 
-Return a COMPACT JSON only response. Do NOT include long essays or multi-paragraph fields.
-- strengths: 3 short bullet-like strings
-- improvements: 3 short bullet-like strings
-- recommendations: 3 short bullet-like strings
-- alignment_comment: 1-2 sentences noting whether transcript matches the instructor-provided context (or that context is missing).
+1.2 Explanation Quality
+- conceptual_accuracy: Were terms and relationships used in a way a student could trust (vs vague or muddled)?
+- causal_reasoning_depth: Did the lecturer explain WHY/HOW, not only WHAT? Could a student retell the mechanism?
+- multi_perspective_explanation: Were there alternative angles, comparisons, or "another way to see it"?
 
-You must output JSON only (one object) so it can be parsed programmatically."""
+1.3 Use of Examples / Representation
+- example_quality_frequency: Enough concrete examples that a student could apply the idea?
+- analogy_concept_bridging: Analogies or links to prior knowledge that actually help a novice?
+- representation_diversity: Verbal plus other forms a student hears (equations, diagrams, steps, cases)?
 
-        user_pedagogy = f"""{context}
+Context alignment: if lecture context is provided and the talk is largely a different subject, score LOW (typically 1–4)
+on all nine — a student in that course would not have learned the intended content. Do not reward a clear lecture on the wrong topic.
 
-Return a single JSON object with ALL keys:
+Return JSON only. Keep evidence_* to ONE short sentence each with a concrete cue from the lecture."""
+
+        user_pedagogy = f"""{lc_block}
+
+LECTURE TRANSCRIPT (judge the whole arc: opening, development, close):
+{transcript_for_llm}
+
+Return ONE JSON object with numeric scores 0–10 (decimals allowed) for ALL of these keys:
 structural_sequencing, logical_consistency, closure_framing,
 conceptual_accuracy, causal_reasoning_depth, multi_perspective_explanation,
 example_quality_frequency, analogy_concept_bridging, representation_diversity,
 content_organization, engagement_techniques, communication_clarity, use_of_examples, knowledge_checking, overall_effectiveness,
-strengths, improvements, recommendations, alignment_comment"""
+evidence_structural_sequencing, evidence_logical_consistency, evidence_closure_framing,
+evidence_conceptual_accuracy, evidence_causal_reasoning_depth, evidence_multi_perspective_explanation,
+evidence_example_quality_frequency, evidence_analogy_concept_bridging, evidence_representation_diversity,
+strengths, improvements, recommendations, alignment_comment
+
+strengths, improvements, recommendations: arrays of 3 short strings from a student's point of view.
+alignment_comment: 1–2 sentences on whether the talk matches the provided context (or that context is missing)."""
 
         p: Optional[Dict[str, Any]] = None
         last_err: Optional[Exception] = None
-        for attempt in range(2):
+        for attempt in range(3):
             suffix = ""
-            if attempt == 1:
+            if attempt >= 1:
                 suffix = (
-                    "\n\nIMPORTANT: Your previous answer could not be parsed. Reply with ONE valid JSON object only. "
-                    "No markdown code fences and no text before or after the object. Use double-quoted keys and strings."
+                    "\n\nIMPORTANT: Reply with ONE valid JSON object only. No markdown fences. "
+                    "Every criterion key must be a number from 0 to 10 (not the text 'average', not all 5s unless truly earned). "
+                    "Do not omit keys."
                 )
             try:
                 response = self._chat_json_completion(
@@ -2145,44 +2328,30 @@ strengths, improvements, recommendations, alignment_comment"""
                         {"role": "system", "content": system_pedagogy},
                         {"role": "user", "content": user_pedagogy + suffix},
                     ],
-                    max_completion_tokens=1800,
-                    prefer_json_object_format=(attempt == 0),
+                    max_completion_tokens=3500,
+                    prefer_json_object_format=True,
                 )
-                if not response or not getattr(response, "choices", None):
-                    raise ValueError("empty completion")
-                msg = response.choices[0].message
-                response_content = (getattr(msg, "content", None) or "").strip()
-                if not response_content:
-                    raise ValueError("AI response content is None or empty")
+                response_content = self._completion_message_text(response)
                 p = self._safe_json_loads(response_content)
+                p = self._ensure_mars_pedagogy_fields(p, allow_legacy_map=True)
                 break
             except Exception as e:
                 last_err = e
+                p = None
                 logger.warning("Pedagogy JSON attempt %s failed: %s", attempt + 1, e)
 
         if p is None:
-            logger.error("Pedagogy analysis using template fallback after JSON failures: %s", last_err)
-            fb = {
-                # Neutral placeholders; do not surface parse errors as "strengths" in the user report.
-                "content_organization": 5.0,
-                "engagement_techniques": 5.0,
-                "communication_clarity": 5.0,
-                "use_of_examples": 5.0,
-                "knowledge_checking": 5.0,
-                "overall_effectiveness": 5.0,
-                "strengths": [],
-                "improvements": [],
-                "recommendations": [],
-                "alignment_comment": "Pedagogical content scoring is temporarily unavailable (response could not be parsed). Please re-run analysis.",
-                "pedagogy_parse_failed": True,
-            }
-            fb = self._ensure_mars_pedagogy_fields(fb)
-            fb["lecture_context_provided"] = bool(lc)
-            return fb
+            raise RuntimeError(
+                "Content scoring failed: the lecture-content model did not return a parseable rubric JSON "
+                f"after 3 attempts ({last_err}). Scores were NOT set to 50%. Re-run the analysis."
+            )
 
-        p = self._ensure_mars_pedagogy_fields(p)
         p["lecture_context_provided"] = bool(lc)
         p["pedagogy_parse_failed"] = False
+        logger.info(
+            "Content pillar scores (0–10): %s",
+            {k: p.get(k) for k in self.MARS_CONTENT_CRITERIA_KEYS},
+        )
         if lc:
             try:
                 align_resp = self._chat_json_completion(
@@ -2207,9 +2376,7 @@ strengths, improvements, recommendations, alignment_comment"""
                     max_completion_tokens=400,
                     prefer_json_object_format=True,
                 )
-                ac = ""
-                if align_resp and align_resp.choices:
-                    ac = (align_resp.choices[0].message.content or "").strip()
+                ac = self._completion_message_text(align_resp)
                 aj = self._safe_json_loads(ac) if ac else {}
                 try:
                     p["context_alignment_score"] = float(aj.get("alignment_score"))
@@ -2245,7 +2412,7 @@ strengths, improvements, recommendations, alignment_comment"""
                 pass
         p["causal_reasoning_depth"] = self._augment_causal_reasoning_depth(
             speech_analysis.get("transcript") or "",
-            float(p.get("causal_reasoning_depth") or 7.0),
+            float(p["causal_reasoning_depth"]),
         )
         p = self._fill_mars_content_evidence_fallback(speech_analysis.get("transcript") or "", p, lecture_context=lc)
         return p
@@ -3768,6 +3935,11 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
                 f"Score combination failed: pedagogical_analysis is not a dict (got {type(pedagogical_analysis).__name__}). "
                 "This usually means the pedagogy/content analysis step did not return a valid payload."
             )
+        if pedagogical_analysis.get("pedagogy_parse_failed"):
+            raise RuntimeError(
+                "Content scoring failed: pedagogical analysis did not produce real rubric scores "
+                "(parse failure). Scores were not defaulted to 50%."
+            )
         if not isinstance(interaction_analysis, dict):
             raise RuntimeError(
                 f"Score combination failed: interaction_analysis is not a dict (got {type(interaction_analysis).__name__}). "
@@ -4425,17 +4597,15 @@ Return valid JSON only with: all_questions_analyzed (list of {{"question": "<exa
     def calculate_pedagogy_score_enhanced(self, pedagogical_analysis: Dict) -> float:
         """Enhanced pedagogy score calculation with weighted sub-components"""
         weights = ANALYSIS_CONFIG["weights"]["pedagogy_components"]
-        
-        # Use individual component scores instead of just overall_effectiveness
+        pedagogical_analysis = self._ensure_mars_pedagogy_fields(dict(pedagogical_analysis), allow_legacy_map=True)
         total_score = (
-            pedagogical_analysis.get('content_organization', 7) * weights["content_organization"] +
-            pedagogical_analysis.get('engagement_techniques', 7) * weights["engagement_techniques"] +
-            pedagogical_analysis.get('communication_clarity', 7) * weights["communication_clarity"] +
-            pedagogical_analysis.get('use_of_examples', 7) * weights["use_of_examples"] +
-            pedagogical_analysis.get('knowledge_checking', 6.5) * weights["knowledge_checking"]
+            pedagogical_analysis["content_organization"] * weights["content_organization"] +
+            pedagogical_analysis["engagement_techniques"] * weights["engagement_techniques"] +
+            pedagogical_analysis["communication_clarity"] * weights["communication_clarity"] +
+            pedagogical_analysis["use_of_examples"] * weights["use_of_examples"] +
+            pedagogical_analysis["knowledge_checking"] * weights["knowledge_checking"]
         )
-        
-        return total_score
+        return float(total_score)
     
     def generate_speech_feedback_enhanced(self, speech_analysis: Dict) -> List[str]:
         """Generate enhanced speech feedback using configurable metrics"""
