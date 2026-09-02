@@ -8,7 +8,8 @@ import shutil
 from pathlib import Path
 import uuid
 import asyncio
-from datetime import datetime 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo 
 from dotenv import load_dotenv
 import json
 import re
@@ -28,6 +29,16 @@ load_dotenv()
 # Override anytime with env BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION on the host.
 # Fallback only; when git metadata is available we prefer auto-count.
 DEFAULT_BACKEND_RELEASE_BUILD = 151
+
+SG_TZ = ZoneInfo("Asia/Singapore")
+
+
+def _sg_now() -> datetime:
+    return datetime.now(SG_TZ)
+
+
+def _sg_now_iso() -> str:
+    return _sg_now().isoformat()
 
 
 def _backend_build_index() -> tuple:
@@ -329,7 +340,6 @@ async def deployment_info():
     """
     Get deployment information including last deployment time
     """
-    import pytz
     from pathlib import Path
     import subprocess
     
@@ -361,16 +371,15 @@ async def deployment_info():
                 main_file = Path(__file__)
                 if main_file.exists():
                     mtime = main_file.stat().st_mtime
-                    deployment_time = datetime.fromtimestamp(mtime, tz=pytz.UTC).isoformat()
+                    deployment_time = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
             except:
                 pass
     
     # If still no time, use current time
     if not deployment_time:
-        deployment_time = datetime.now(pytz.UTC).isoformat()
+        deployment_time = datetime.now(timezone.utc).isoformat()
     
     # Convert to Singapore time
-    singapore_tz = pytz.timezone('Asia/Singapore')
     
     # Parse deployment time
     if isinstance(deployment_time, str):
@@ -386,7 +395,7 @@ async def deployment_info():
                     dt_str = f"{date_part}T{time_part}{tz_offset[:3]}:{tz_offset[3:]}"
                     dt = datetime.fromisoformat(dt_str)
                     # Convert to UTC first, then to Singapore
-                    dt = dt.astimezone(pytz.UTC)
+                    dt = dt.astimezone(timezone.utc)
                 else:
                     dt = datetime.fromisoformat(deployment_time.replace('Z', '+00:00'))
             except:
@@ -397,9 +406,9 @@ async def deployment_info():
         dt = deployment_time
     
     if dt.tzinfo is None:
-        dt = pytz.UTC.localize(dt)
+        dt = dt.replace(tzinfo=timezone.utc)
     
-    singapore_time = dt.astimezone(singapore_tz)
+    singapore_time = dt.astimezone(SG_TZ)
     
     idx, src, env_key = _backend_build_index()
     sha = _backend_short_sha()
@@ -754,9 +763,7 @@ async def upload_video(
     ctx_stored = (lecture_context or "").strip()[:20000]
     
     # Register this upload in analysis_results for tracking
-    import pytz
-    singapore_tz = pytz.timezone('Asia/Singapore')
-    singapore_time = datetime.now().astimezone(singapore_tz)
+    singapore_time = _sg_now()
     
     analysis_results[analysis_id] = {
         "status": "uploading",
@@ -814,7 +821,7 @@ async def upload_video(
         
         # Record the moment upload completed (start of analysis timing window)
         analysis_results.setdefault(analysis_id, {})
-        analysis_results[analysis_id]["upload_completed_at"] = datetime.now().astimezone(singapore_tz).isoformat()
+        analysis_results[analysis_id]["upload_completed_at"] = _sg_now().isoformat()
     except HTTPException:
         # Re-raise HTTP exceptions (including cancellation)
         raise
@@ -832,9 +839,7 @@ async def upload_video(
     
     if not queue_status["can_start_immediately"]:
         # Add to queue
-        import pytz
-        singapore_tz = pytz.timezone('Asia/Singapore')
-        singapore_time = datetime.now().astimezone(singapore_tz)
+        singapore_time = _sg_now()
         
         job_queue.append({
             "analysis_id": analysis_id,
@@ -886,9 +891,7 @@ async def upload_video(
     
     # Initialize analysis status with enhanced info
     # Initialize analysis result with Singapore time
-    import pytz
-    singapore_tz = pytz.timezone('Asia/Singapore')
-    singapore_time = datetime.now().astimezone(singapore_tz)
+    singapore_time = _sg_now()
     
     analysis_results[analysis_id] = {
         "status": "processing",
@@ -986,9 +989,7 @@ async def stop_analysis(analysis_id: str):
         analysis_results[analysis_id]["message"] = "Analysis stopped by user"
         
         # Store the stop request timestamp with Singapore time
-        import pytz
-        singapore_tz = pytz.timezone('Asia/Singapore')
-        singapore_time = datetime.now().astimezone(singapore_tz)
+        singapore_time = _sg_now()
         analysis_results[analysis_id]["stopped_at"] = singapore_time.isoformat()
         
         # If there's a running process, mark it for termination
@@ -1018,9 +1019,7 @@ async def cancel_upload(analysis_id: str, request: Request = None):
         if analysis_id in analysis_results:
             analysis_results[analysis_id]["status"] = "cancelled"
             analysis_results[analysis_id]["message"] = "Upload cancelled by user"
-            import pytz
-            singapore_tz = pytz.timezone('Asia/Singapore')
-            analysis_results[analysis_id]["cancelled_at"] = datetime.now().astimezone(singapore_tz).isoformat()
+            analysis_results[analysis_id]["cancelled_at"] = _sg_now().isoformat()
         
         # Remove from queue if present
         job_queue[:] = [job for job in job_queue if job.get("analysis_id") != analysis_id]
@@ -1716,9 +1715,7 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
             analysis_results[analysis_id]["log_messages"] = []
         
         # Add message to log history with Singapore time
-        import pytz
-        singapore_tz = pytz.timezone('Asia/Singapore')
-        singapore_time = current_time.astimezone(singapore_tz)
+        singapore_time = _sg_now()
         
         log_entry = {
             "timestamp": singapore_time.isoformat(),
@@ -1738,9 +1735,7 @@ async def update_progress(analysis_id: str, progress: int, message: str, details
         
         # Force immediate update by adding a timestamp and counter to trigger SSE
         # Convert to Singapore time
-        import pytz
-        singapore_tz = pytz.timezone('Asia/Singapore')
-        singapore_time = current_time.astimezone(singapore_tz)
+        singapore_time = _sg_now()
         analysis_results[analysis_id]["last_update"] = singapore_time.isoformat()
         analysis_results[analysis_id]["update_counter"] = analysis_results[analysis_id].get("update_counter", 0) + 1
         
@@ -1763,15 +1758,13 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
     """
     Process video analysis using real AI services with detailed step tracking
     """
-    import pytz
     try:
         print(f"🚀 BACKGROUND TASK STARTED for {analysis_id}")
         
         # Register this process for potential stopping
-        singapore_tz = pytz.timezone('Asia/Singapore')
         running_processes[analysis_id] = {
             "should_stop": False,
-            "started_at": datetime.now().astimezone(singapore_tz).isoformat()
+            "started_at": _sg_now().isoformat()
         }
         
         # Simple progress callback that updates state directly and checks for stop
@@ -1799,7 +1792,7 @@ async def process_video_with_enhanced_ai(analysis_id: str, file_path: Path):
         
         # Update with final results
         if analysis_id in analysis_results:
-            completed_at = datetime.now().astimezone(singapore_tz).isoformat()
+            completed_at = _sg_now().isoformat()
             upload_completed_at = analysis_results[analysis_id].get("upload_completed_at")
             duration_seconds = None
             try:
@@ -1896,9 +1889,7 @@ async def process_next_queued_job():
         if analysis_id in analysis_results:
             analysis_results[analysis_id]["status"] = "processing"
             analysis_results[analysis_id]["message"] = "Starting analysis..."
-            import pytz
-            singapore_tz = pytz.timezone('Asia/Singapore')
-            singapore_time = datetime.now().astimezone(singapore_tz)
+            singapore_time = _sg_now()
             analysis_results[analysis_id]["log_messages"].append({
                 "timestamp": singapore_time.isoformat(),
                 "message": "🚀 Starting analysis from queue",
@@ -1962,7 +1953,7 @@ async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
             "progress": 100,
             "message": "Enhanced analysis completed successfully! (Mock mode)",
             "results": final_results,
-            "completed_at": datetime.now().astimezone(pytz.timezone('Asia/Singapore')).isoformat(),
+            "completed_at": datetime.now().astimezone(SG_TZ).isoformat(),
             "analysis_duration_seconds": None,
             "analysis_summary": {
                 "frames_analyzed": 40,
