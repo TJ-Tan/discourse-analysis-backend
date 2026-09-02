@@ -28,7 +28,7 @@ load_dotenv()
 # Manual release index for footer "Release build (API)". Bump when you ship a meaningful backend cut.
 # Override anytime with env BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION on the host.
 # Fallback only; when git metadata is available we prefer auto-count.
-DEFAULT_BACKEND_RELEASE_BUILD = 151
+DEFAULT_BACKEND_RELEASE_BUILD = 152
 
 SG_TZ = ZoneInfo("Asia/Singapore")
 
@@ -188,13 +188,17 @@ except ImportError:
     def human_context_mismatch_paragraph(lecture_context, transcript_excerpt, penalty_points):  # type: ignore
         return ""
 
+AI_IMPORT_ERROR = None
 try:
     from ai_processor import video_processor
     from metrics_config import get_configurable_parameters, update_configuration, ANALYSIS_CONFIG
     AI_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    import traceback
     AI_AVAILABLE = False
+    AI_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     print("Warning: Enhanced AI processor not available. Running in mock mode.")
+    traceback.print_exc()
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -439,6 +443,7 @@ async def health_check():
         "ai_services": {
             "openai": "configured" if os.getenv('OPENAI_API_KEY') else "missing",
             "ai_processor": "enhanced" if AI_AVAILABLE else "missing",
+            "ai_processor_error": AI_IMPORT_ERROR,
             "chunking_enabled": True
         },
         "configuration": {
@@ -1105,11 +1110,7 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
     """
     Generate personalized PDF summary with strengths, improvements, and evidence
     """
-    if not AI_AVAILABLE:
-        raise HTTPException(status_code=503, detail="AI processor not available")
-    
     try:
-        from ai_processor import video_processor
         from openai import OpenAI
         import json
         
@@ -1138,8 +1139,8 @@ async def generate_pdf_summary(request: Request, summary_data: dict):
         sample_frames_count = summary_data.get('sample_frames_count', 0)
         filler_words = summary_data.get('filler_words', [])
         explanations = summary_data.get('explanations', {})
-        extra_strengths = summary_data.get('extra_strengths', []) or []
-        extra_growth = summary_data.get('extra_growth', []) or []
+        extra_strengths = [str(x) for x in (summary_data.get('extra_strengths', []) or []) if x]
+        extra_growth = [str(x) for x in (summary_data.get('extra_growth', []) or []) if x]
         context_alignment_score = summary_data.get('context_alignment_score', None)
         context_alignment_verdict = summary_data.get('context_alignment_verdict', None)
         content_penalty_points = summary_data.get('content_penalty_points', 0)
@@ -1553,7 +1554,24 @@ FORCE_FULL MODE:
             
     except Exception as e:
         print(f"Error generating PDF summary: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate PDF summary: {str(e)}")
+        ov = float(summary_data.get("overall_score") or 0)
+        cs = float(summary_data.get("content_score") or 0)
+        ds = float(summary_data.get("delivery_score") or 0)
+        es = float(summary_data.get("engagement_score") or 0)
+        return JSONResponse(
+            content={
+                "summary": {
+                    "personalized_feedback": (
+                        f"This session’s MARS overall score is {ov * 10:.1f}/100 "
+                        f"(Content {cs * 10:.1f}/100, Delivery {ds * 10:.1f}/100, Engagement {es * 10:.1f}/100). "
+                        "A longer narrative summary could not be generated on the server; use the scores and evidence on this report."
+                    ),
+                    "strongest_strength": None,
+                    "improvements": [],
+                    "summary_provenance": "server_fallback",
+                }
+            }
+        )
 
 @app.get("/stream/{analysis_id}")
 async def stream_progress(analysis_id: str):
@@ -1915,12 +1933,20 @@ async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
     Enhanced mock processing with realistic progress updates
     """
     try:
-        # Initialize progress tracking
-        analysis_results[analysis_id] = {
-            "status": "processing",
-            "progress": 10,
-            "message": "Extracting enhanced audio and video components..."
-        }
+        prev = analysis_results.get(analysis_id) or {}
+        ctx = (prev.get("lecture_context") or "").strip()
+        logs = list(prev.get("log_messages") or [])
+        rec = analysis_results.setdefault(analysis_id, {})
+        rec["status"] = "processing"
+        rec["progress"] = 10
+        rec["message"] = "Extracting enhanced audio and video components..."
+        rec["lecture_context"] = ctx
+        if logs:
+            rec["log_messages"] = logs
+        if AI_IMPORT_ERROR:
+            rec["message"] = (
+                f"Real analysis unavailable ({AI_IMPORT_ERROR}). Running mock scores only."
+            )
         
         # Simulate enhanced processing steps
         await asyncio.sleep(3)
@@ -1945,14 +1971,16 @@ async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
         
         await asyncio.sleep(1)
         
-        # Create enhanced mock analysis results
+        # Create enhanced mock analysis results (keep submitted context / logs)
         final_results = create_enhanced_mock_results()
-        
-        analysis_results[analysis_id] = {
+        final_results["lecture_context"] = ctx
+        rec = analysis_results.get(analysis_id) or {}
+        rec.update({
             "status": "completed",
             "progress": 100,
             "message": "Enhanced analysis completed successfully! (Mock mode)",
             "results": final_results,
+            "lecture_context": ctx,
             "completed_at": datetime.now().astimezone(SG_TZ).isoformat(),
             "analysis_duration_seconds": None,
             "analysis_summary": {
@@ -1967,7 +1995,8 @@ async def process_video_mock_enhanced(analysis_id: str, file_path: Path):
                     "Weighted sub-component scoring"
                 ]
             }
-        }
+        })
+        analysis_results[analysis_id] = rec
         
         # Clean up uploaded file
         if file_path.exists():
