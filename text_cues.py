@@ -145,6 +145,33 @@ def first_usable_snippet(text: str, markers: Sequence[str]) -> str:
     return ""
 
 
+def evidence_with_example(
+    lead: str,
+    transcript: str,
+    markers: Sequence[str],
+    empty_note: str,
+    quote_limit: int = 140,
+) -> str:
+    """Lead sentence plus a short verbatim cue, or a fallback note when no marker hits.
+
+    Used by Content 'why this score' evidence. Must stay exported: ai_processor imports
+    this name at module load, and a missing export puts the API into mock scoring.
+    """
+    lead_s = (lead or "").strip()
+    note = (empty_note or "").strip()
+    sn = first_usable_snippet(transcript or "", markers)
+    if sn:
+        quote = re.sub(r"\s+", " ", sn).strip()
+        if len(quote) > quote_limit:
+            quote = quote[: quote_limit - 1] + "…"
+        if lead_s:
+            return f'{lead_s} Example from the lecture: “{quote}”.'
+        return f'Example from the lecture: “{quote}”.'
+    if lead_s and note:
+        return f"{lead_s} {note}"
+    return lead_s or note
+
+
 _GENERIC_ORG = {
     "school", "faculty", "university", "college", "department", "institute", "computing",
     "education", "information", "sciences", "science", "engineering", "soc",

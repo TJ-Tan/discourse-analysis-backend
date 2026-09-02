@@ -28,7 +28,7 @@ load_dotenv()
 # Manual release index for footer "Release build (API)". Bump when you ship a meaningful backend cut.
 # Override anytime with env BACKEND_COMMIT_COUNT or DEPLOYMENT_ITERATION on the host.
 # Fallback only; when git metadata is available we prefer auto-count.
-DEFAULT_BACKEND_RELEASE_BUILD = 152
+DEFAULT_BACKEND_RELEASE_BUILD = 153
 
 SG_TZ = ZoneInfo("Asia/Singapore")
 
